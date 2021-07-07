@@ -1,8 +1,9 @@
-from typing import Any, Iterable, Optional, Sequence, cast
+import collections
+from typing import Any, Iterable, Optional, Sequence
 
 from coba.learners import Learner
 from coba.pipes import Pipe, Filter, Source, Sink, Cartesian, JsonEncode, DiskSink, MemorySink
-from coba.simulations import Simulation
+from coba.simulations import Simulation, Take, Shuffle
 
 from coba.benchmarks.results import Result, ResultPromote
 
@@ -65,25 +66,42 @@ class Transaction:
     @staticmethod
     def simulations(simulations:Sequence[Source[Simulation]]) -> Iterable[Any]:
 
+        def get_source(simulation: Source[Simulation]) -> Source[Simulation]:
+
+            if isinstance(simulation, Pipe.SourceFilters):
+                return get_source(simulation._source)
+            else:
+                return simulation
+
+        def get_filters(pipes: Source[Simulation]) -> Sequence[Filter[Simulation,Simulation]]:
+            if isinstance(simulation, Pipe.SourceFilters):
+                return simulation._filter._filters #we know these are flattened already
+            else:
+                return []
+
         for index, simulation in enumerate(simulations):
-            yield Transaction.simulation(index, pipe=str(simulation))
+
+            source  = str(get_source(simulation)).strip('"')
+            shuffle = "None"
+            take    = "None"
+
+            for filter in get_filters(simulation):
+                if isinstance(filter, Shuffle): shuffle = str(filter._seed )
+                if isinstance(filter, Take   ): take    = str(filter._count)
+
+            yield Transaction.simulation(index, source=source, shuffle=shuffle, take=take, pipe=str(simulation))
 
     @staticmethod
-    def batch(simulation_id:int, learner_id:int, **kwargs) -> Any:
-        """Write batch metadata row to Result.
+    def interactions(simulation_id:int, learner_id:int, **kwargs) -> Any:
+        """Write interaction evaluation metadata row to Result.
 
         Args:
-            learner_id: The primary key for the learner we observed the batch for.
-            simulation_id: The primary key for the simulation the batch came from.
-            batch_index: The index of the batch within the simulation.
-            kwargs: The metadata to store about the batch.
+            learner_id: The primary key for the learner we observed on the interaction.
+            simulation_id: The primary key for the simulation the interaction came from.
+            kwargs: The metadata to store about the interaction with the learner.
         """
 
-        for col in ["C", "A", "N"]:
-            if col in kwargs and len(set(kwargs[col])) == 1:
-                kwargs[col] = kwargs[col][0]
-
-        return ["B", (simulation_id, learner_id), kwargs]
+        return ["I", (simulation_id, learner_id), kwargs]
 
 class TransactionIsNew(Filter):
 
@@ -103,13 +121,13 @@ class TransactionIsNew(Filter):
             if tipe == "benchmark" and len(self._existing.benchmark) != 0:
                 continue
 
-            if tipe == "B" and transaction[1] in self._existing.batches:
+            if tipe == "I" and transaction[1] in self._existing._interactions:
                 continue
 
-            if tipe == "S" and transaction[1] in self._existing.simulations:
+            if tipe == "S" and transaction[1] in self._existing._simulations:
                 continue
 
-            if tipe == "L" and transaction[1] in self._existing.learners:
+            if tipe == "L" and transaction[1] in self._existing._learners:
                 continue
 
             yield transaction
@@ -134,7 +152,7 @@ class TransactionSink(Sink):
             final_sink = self._sink
 
         if isinstance(final_sink, MemorySink):
-            return Result.from_transactions(cast(Iterable[Any], final_sink.items))
+            return Result.from_transactions(final_sink.items)
 
         if isinstance(final_sink, DiskSink):
             return Result.from_file(final_sink.filename)

@@ -1,18 +1,19 @@
-import math
+import re
 import collections
 
-from pathlib import Path
-from itertools import chain, groupby, count
-from typing import Any, Iterable, Dict, List, Tuple, Optional, Sequence, cast, Hashable
+from numbers import Number
+from operator import truediv
+from itertools import chain, repeat, product, accumulate
+from typing import Any, Iterable, Dict, List, Tuple, Optional, Sequence, Hashable, Iterator, Union, Type
 
+from coba.config import CobaConfig
 from coba.utilities import PackageChecker
-from coba.statistics import OnlineMean, OnlineVariance
 from coba.pipes import Filter, Cartesian, JsonEncode, JsonDecode, StopPipe, Pipe, DiskSink, DiskSource 
 
 class Table:
     """A container class for storing tabular data."""
 
-    def __init__(self, name:str, primary: Sequence[str], default=float('nan')):
+    def __init__(self, name:str, primary: Sequence[str]):
         """Instantiate a Table.
         
         Args:
@@ -21,98 +22,171 @@ class Table:
         """
         self._name    = name
         self._primary = primary
-        self._columns = list(primary)
-        self._default = default
+        self._columns = collections.OrderedDict(zip(primary,repeat(None)))
 
-        self.rows: Dict[Hashable, Sequence[Any]] = {}
+        self._rows_flat: Dict[Hashable, Dict[str,Any]] = {}
+        self._rows_pack: Dict[Hashable, Dict[str,Any]] = {}
 
-    def add_row(self, *row, **kwrow) -> None:
-        """Add a row of data to the table. The row must contain all primary columns."""
+    @property
+    def name(self) -> str:
+        return self._name
 
-        if kwrow:
-            self._columns.extend([col for col in kwrow if col not in self._columns])
+    @property
+    def columns(self) -> Sequence[str]:
+        return list(self._columns.keys())
 
-        row = row + tuple( kwrow.get(col, self._default) for col in self._columns[len(row):] ) #type:ignore
-        self.rows[row[0] if len(self._primary) == 1 else tuple(row[0:len(self._primary)])] = row
+    @property
+    def dtypes(self) -> Sequence[Type[Union[int,float,bool,object]]]:
 
-    def get_row(self, key: Hashable) -> Dict[str,Any]:
-        row = self.rows[key]
-        row = list(row) + [self._default] * (len(self._columns) - len(row))
+        flats = self._rows_flat
+        packs = self._rows_pack
+        keys  = self._rows_flat.keys()
 
-        return {k:v for k,v in zip(self._columns,row)}
+        columns_packed = [ any([ col in packs[key] for key in keys]) for col in self.columns ]
+        columns_values = [ [flats[key].get(col, packs[key].get(col, self._default(col))) for key in keys] for col in self.columns ]
 
-    def rmv_row(self, key: Hashable) -> None:
-        self.rows.pop(key, None)
-
-    def get_where(self, **kwargs) -> Iterable[Dict[str,Any]]:
-
-        if any([k not in self._columns for k in kwargs]):
-            return
-
-        idx_val = [ (self._columns.index(col), val) for col,val in kwargs.items() ]
-
-        for key,row in self.rows.items():
-            if all( row[i]==v for i,v in idx_val):
-                yield {k:v for k,v in zip(self._columns,row)}
-
-    def rmv_where(self, **kwrow) -> None:
-        idx_val = [ (self._columns.index(col), val) for col,val in kwrow.items() ]
-        rmv_keys  = []
-
-        for key,row in self.rows.items():
-            if all( row[i]==v for i,v in idx_val):
-                rmv_keys.append(key)
-
-        for key in rmv_keys: 
-            del self.rows[key] 
-
-    def to_tuples(self) -> Sequence[Any]:
-        """Convert a table into a sequence of namedtuples."""
-        return list(self.to_indexed_tuples().values())
-
-    def to_indexed_tuples(self) -> Dict[Hashable, Any]:
-        """Convert a table into a mapping of keys to tuples."""
-
-        my_type = collections.namedtuple(self._name, self._columns) #type: ignore #mypy doesn't like dynamic named tuples
-        my_type.__new__.__defaults__ = (self._default, ) * len(self._columns) #type: ignore #mypy doesn't like dynamic named tuples
-        
-        return { key:my_type(*value) for key,value in self.rows.items() } #type: ignore #mypy doesn't like dynamic named tuples
+        return [ self._infer_type(column_packed, column_values) for column_packed, column_values in zip(columns_packed,columns_values)]
 
     def to_pandas(self) -> Any:
-        """Convert a table into a pandas dataframe."""
+        PackageChecker.pandas("Table.to_pandas")
+        import pandas as pd #type: ignore
+        import numpy as np #type: ignore #pandas installs numpy so if we have pandas we have numpy
 
-        PackageChecker.pandas('Table.to_pandas')
-        import pandas as pd #type: ignore #mypy complains otherwise
+        col_numpy = { col: np.empty(len(self), dtype=dtype) for col,dtype in zip(self.columns,self.dtypes)}
 
-        return pd.DataFrame(self.to_tuples())
+        index = 0
 
-    def __contains__(self, primary) -> bool:
+        for key in self._rows_flat.keys():
 
-        if isinstance(primary, collections.Mapping):
-            primary = list(primary.values())[0] if len(self._primary) == 1 else tuple([primary[col] for col in self._primary])
+            flat = self._rows_flat[key]
+            pack = self._rows_pack[key]
 
-        return primary in self.rows
+            size = 1 if not pack else len(pack['index'])
 
-    def __getitem__(self, key) -> Dict[str,Any]:
-        return self.get_row(key)
+            for col in self.columns:
+                if col in pack:
+                    val = pack[col]
+
+                elif col in flat:
+                    if isinstance(flat[col], (tuple,list)):
+                        val = [flat[col]]
+                    else:
+                        val = flat[col]
+
+                else:
+                    val = self._default(col)
+                    
+                col_numpy[col][index:(index+size)] = val
+
+            index += size
+
+        return pd.DataFrame(col_numpy, columns=self.columns)
+
+    def to_tuples(self) -> Sequence[Tuple[Any,...]]:
+
+        tooples = []
+
+        for key in self._rows_flat.keys():
+            
+            flat = self._rows_flat[key]
+            pack = self._rows_pack[key]
+
+            if not pack:
+                tooples.append(tuple(flat.get(col,self._default(col)) for col in self.columns))
+            else:
+                tooples.extend(zip(*[pack.get(col,repeat(flat.get(col,self._default(col)))) for col in self.columns]))
+                
+        return tooples
+
+    def _default(self, column:str) -> Any:
+        return [1] if column == "index" else float('nan')
+
+    def _infer_type(self, is_packed: bool, values: Sequence[Any]) -> Type[Union[int,float,bool,object]]:
+
+        types = []
+
+        to_type = lambda value: None if value is None else type(value)
+
+        for value in values:
+            if is_packed and isinstance(value, (list,tuple)):
+                types.extend([to_type(v) for v in value])
+            else:
+                types.append(to_type(value))
+        
+        return self._resolve_types(types)
+
+    def _resolve_types(self, types: Sequence[Type[Any]]) -> Type[Union[int,float,bool,object]]:
+        types = list(set(types))
+
+        if len(types) == 1 and types[0] in [dict,str]:
+            return object
+        
+        if len(types) == 1 and types[0] in [int,float,bool]:
+            return types[0]
+
+        if all(t in [None,int,float] for t in types):
+            return float
+
+        return object
+
+    def _key(self, key: Union[Hashable, Sequence[Hashable]]) -> Union[Hashable,Tuple[Hashable,...]]:
+        key_len = len(key) if isinstance(key,(list,tuple)) else 1
+        
+        assert key_len == len(self._primary), "Incorrect primary key length given"
+        
+        return tuple(key) if isinstance(key,(list,tuple)) else key
+
+    def __iter__(self) -> Iterator[Dict[str,Any]]:
+        for key in self._rows_flat.keys():
+            yield self[key]
+
+    def __contains__(self, key: Union[Hashable, Sequence[Hashable]]) -> bool:
+        return self._key(key) in self._rows_flat
 
     def __str__(self) -> str:
-        return str({"Table": self._name, "Columns": self._columns, "Rows": len(self.rows)})
-
-    def __repr__(self) -> str:
-        return str(self)
+        return str({"Table": self.name, "Columns": self.columns, "Rows": len(self)})
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return sum([len(p['index']) if p else 1 for p in self._rows_pack.values()])
+
+    def __setitem__(self, key: Union[Hashable, Sequence[Hashable]], values: Dict[str,Any]):
+
+        key = self._key(key)
+
+        #Try to make sure index is 3rd in order. 
+        #It makes things look nicer in a data frame.
+        if "_packed" in values: 
+            self._columns["index"] = None
+
+        row_flat = dict(zip(self._primary, key if isinstance(key,tuple) else [key]), **values)
+        row_pack = row_flat.pop("_packed", {})
+
+        if row_pack:
+            assert len(set([len(value) for value in row_pack.values()])) == 1, "All packed columns must be equal length."
+
+        if row_pack:
+            row_pack['index'] = list(range(1,len(list(row_pack.values())[0])+1))
+
+        self._rows_flat[key] = row_flat
+        self._rows_pack[key] = row_pack
+        self._columns.update(zip(list(row_flat.keys()) + list(row_pack.keys()), repeat(None)))
+
+    def __getitem__(self, key: Union[Hashable, Sequence[Hashable]]) -> Dict[str,Any]:
+        return dict(**self._rows_flat[self._key(key)], **self._rows_pack[self._key(key)])
+
+    def __delitem__(self, key: Union[Hashable, Sequence[Hashable]]) -> None:
+        del self._rows_flat[self._key(key)]
+        del self._rows_pack[self._key(key)]
 
 class Result:
-    """A class for creating and returning the result of a Benchmark evaluation."""
+    """A class representing the result of a Benchmark evaluation on a given collection of Simulations and Learners."""
 
     @staticmethod
-    def from_file(filename: Optional[str]) -> 'Result':
+    def from_file(filename: str) -> 'Result':
         """Create a Result from a transaction file."""
         
-        if filename is None or not Path(filename).exists(): return Result()
+        #Why is this here??? This is really confusing in practice
+        #if filename is None or not Path(filename).exists(): return Result()
 
         json_encode = Cartesian(JsonEncode())
         json_decode = Cartesian(JsonDecode())
@@ -126,195 +200,396 @@ class Result:
 
         result = Result()
 
-        for transaction in transactions:
-            result.add_transaction(transaction)
+        for trx in transactions:
+            if trx[0] == "version"  : result.version   = trx[1]
+            if trx[0] == "benchmark": result.benchmark = trx[1]
+            if trx[0] == "L"        : result._learners    [trx[1]       ] = trx[2]
+            if trx[0] == "S"        : result._simulations [trx[1]       ] = trx[2]
+            if trx[0] == "I"        : result._interactions[tuple(trx[1])] = trx[2]
 
         return result
-
-    def add_transaction(self, transaction: Any) -> None:
-        if transaction[0] == "version"  : self.version = transaction[1]
-        if transaction[0] == "benchmark": self.benchmark = transaction[1]
-        if transaction[0] == "L"        : self.learners.add_row(transaction[1], **transaction[2])
-        if transaction[0] == "S"        : self.simulations.add_row(transaction[1], **transaction[2])
-        if transaction[0] == "B"        :
-            for col in ["C", "A", "N"]:
-                if "reward" in transaction[2] and col in transaction[2] and not isinstance(transaction[2][col], collections.Sequence):
-                    transaction[2][col] = [transaction[2][col]] * len(transaction[2]["reward"])
-
-            self.batches.add_row(*transaction[1], **transaction[2])
 
     def __init__(self) -> None:
         """Instantiate a Result class."""
 
-        self.version     = None
-        self.benchmark   = cast(Dict[str,Any],{})
-        self.learners    = Table("Learners"   , ['learner_id'])
-        self.simulations = Table("Simulations", ['simulation_id'])
+        self.version    : Optional[int]  = None
+        self.benchmark  : Dict[str, Any] = {}
 
-        #Warning, if you change the order of the columns for batches then:
-        # 1. TransactionLogPromote.current_version() will need to be bumped to version 3
-        # 2. TransactionLogPromote.to_next_version() will need to promote version 2 to 3
-        # 3. TransactionLog.write_batch will need to be modified to write in new order
-        self.batches     = Table("Batches"    , ['simulation_id', 'learner_id'])
+        #providing the types in advance makes to_pandas about 10 times faster since we can preallocate space
+        self._interactions = Table("Interactions", ['simulation_id', 'learner_id'])
+        self._learners     = Table("Learners"    , ['learner_id'])
+        self._simulations  = Table("Simulations" , ['simulation_id'])
 
-    def to_tuples(self) -> Tuple[Sequence[Any], Sequence[Any], Sequence[Any]]:
-        return (
-            self.learners.to_tuples(),
-            self.simulations.to_tuples(),
-            self.batches.to_tuples()
-        )
+    @property
+    def learners(self) -> Table:
+        """The collection of learners evaluated by Benchmark. The easiest way to work with the 
+            learners is to convert them to a pandas data frame via Result.learners.to_pandas()
+        """
+        return self._learners
 
-    def to_indexed_tuples(self) -> Tuple[Dict[int,Any], Dict[int,Any], Dict[Tuple[int,int,Optional[int],int],Any]]:
-        return (
-            cast(Dict[int,Any], self.learners.to_indexed_tuples()),
-            cast(Dict[int,Any], self.simulations.to_indexed_tuples()),
-            cast(Dict[Tuple[int,int,Optional[int],int],Any], self.batches.to_indexed_tuples())
-        )
+    @property
+    def simulations(self) -> Table:
+        """The collection of simulations used to evaluate each learner in the Benchmark. The easiest
+            way to work with simulations is to convert to a dataframe via Result.simulations.to_pandas()
+        """
+        return self._simulations
 
-    def to_pandas(self) -> Tuple[Any,Any,Any]:
+    @property
+    def interactions(self) -> Table:
+        """The collection of interactions that learners chose actions for in the Benchmark. Each interaction
+            has a simulation_id and learner_id column to link them to the learners and simulations tables. The 
+            easiest way to work with interactions is to convert to a dataframe via Result.interactions.to_pandas()
+        """
+        return self._interactions
 
-        PackageChecker.pandas("Result.to_pandas")
+    def plot_learners(self, 
+        source_pattern :Union[str,int] = ".*",
+        learner_pattern:Union[str,int] = ".*", 
+        span:int = None,
+        start:Union[int,float]=0.05,
+        end:Union[int,float] = 1.,
+        err_every:Union[int,float]=.05,
+        err_type:str=None,
+        figsize=(9,6),
+        ax=None) -> None:
+        """This plots the performance of multiple Learners on multiple simulations. It gives a sense of the expected 
+            performance for different learners across independent simulations. This plot is valuable in gaining insight 
+            into how various learners perform in comparison to one another. 
 
-        l = self.learners.to_pandas()
-        s = self.simulations.to_pandas()
-        b = self.batches.to_pandas()
+        Args:
+            source_pattern: The pattern to match when determining which simulations to include in the plot. The "source" 
+                matched against is either the "source" column in the simulations table or the first item in the list in 
+                the simulation 'pipes' column. The simulations can be seen most easily by Result.simulations.to_pandas().
+            learner_pattern: The pattern to match against the 'full_name' column in learners to determine which learners
+                to include in the plot. In the case of multiple matches only the last match is kept. The learners table in
+                Result can be examined via result.learners.to_pandas().
+            span: In general this indicates how many previous evaluations to average together. In practice this works
+                identically to ewm span value in the Pandas API. Additionally, if span equals None then all previous 
+                rewards are averaged together and that value is plotted. Compare this to span = 1 WHERE only the current 
+                reward is plotted for each interaction.
+            start: Determines at which interaction the plot will start at. If start is greater than 1 we assume start is
+                an interaction index. If start is less than 1 we assume start is the percent of interactions to skip
+                before starting the plot.
+            end: Determines at which interaction the plot will stop at. If end is greater than 1 we assume end is
+                an interaction index. If end is less than 1 we assume end is the percent of interactions to end on.
+            err_every: Determines frequency of bars indicating the standard deviation of the population should be drawn. 
+                Standard deviation gives a sense of how well the plotted average represents the underlying distribution. 
+                Standard deviation is most valuable when plotting against multiple simulations. If plotting against a single 
+                simulation standard error may be a more useful indicator of confidence. The value for sd_every should be
+                between 0 to 1 and will determine how frequently the standard deviation bars are drawn.
+            err_type: Determines what the error bars are. Valid types are `None`, 'se', and 'sd'. If err_type is None then 
+                plot will use SEM when there is only one source simulation otherwise it will use SD. Otherwise plot will
+                display the standard error of the mean for 'se' and the standard deviation for 'sd'.
+        """
 
-        return (l,s,b)
+        PackageChecker.matplotlib('Result.standard_plot')
 
-    def standard_plot(self, select_learners: Sequence[int] = None,  show_err: bool = False, show_sd: bool = False, figsize=(12,4)) -> None:
+        learner_ids    = []
+        learner_names  = {}
+        sources        = set()
+        simulation_ids = []
 
-        PackageChecker.matplotlib('Plots.standard_plot')
+        if isinstance(source_pattern, Number):
+            source_pattern = f'(\D|^){source_pattern}(\D|$)'
 
-        def _plot(axes, label, xs, ys, vs, ns):
-            axes.plot(xs, ys, label=label)
+        if isinstance(learner_pattern, Number):
+            learner_pattern = f'(\D|^){learner_pattern}(\D|$)'
 
-            if show_sd:
-                ls = [ y-math.sqrt(v) for y,v in zip(ys,vs) ]
-                us = [ y+math.sqrt(v) for y,v in zip(ys,vs) ]
-                axes.fill_between(xs, ls, us, alpha = 0.1)
+        for simulation in self._simulations:
 
-            if show_err:
-                # I don't really understand what this is... For each x our distribution
-                # is changing so its VAR is also changing. What does it mean to calculate
-                # sample variance from a deterministic collection of random variables with
-                # different distributions? For example sample variance of 10 random variables
-                # from dist1 and 10 random variables from dist2... This is not the same as 20
-                # random variables with 50% chance drawing from dist1 and 50% chance of drawing
-                # from dist2. So the distribution can only be defined over the whole space (i.e.,
-                # all 20 random variables) and not for a specific random variable. Oh well, for
-                # now I'm leaving this as it is since I don't have any better ideas. I think what
-                # I've done is ok, but I need to more some more thought into it.
-                ls = [ y-math.sqrt(v/n) for y,v,n in zip(ys,vs,ns) ]
-                us = [ y+math.sqrt(v/n) for y,v,n in zip(ys,vs,ns) ]
-                axes.fill_between(xs, ls, us, alpha = 0.1)
+            if 'source' in simulation:
+                source = simulation['source']
+            else:
+                #this is a hack...
+                source_end = max(simulation['pipe'].find("},{"), simulation['pipe'].find(","))
+                source_end = source_end if source_end > -1 else len(simulation['pipe'])
+                source     = simulation['pipe'][0:source_end]
 
-        learners, _, batches = self.to_indexed_tuples()
+            if re.search(source_pattern, source):
+                sources.add(source)
+                simulation_ids.append(simulation['simulation_id'])
 
-        learners = {key:value for key,value in learners.items() if select_learners is None or key in select_learners}
-        batches  = {key:value for key,value in batches.items() if select_learners is None or value.learner_id in select_learners}
+        for learner in self._learners:
+            if re.search(learner_pattern, learner['full_name']):
+                learner_names[learner['learner_id']] = learner['full_name']
+                learner_ids.append(learner['learner_id'])
 
-        sorted_batches  = sorted(batches.values(), key=lambda batch: batch.learner_id)
-        grouped_batches = groupby(sorted_batches , key=lambda batch: batch.learner_id)
+        if len(learner_ids) == 0:
+            CobaConfig.Logger.log(f"No learners were found matching {learner_pattern}")
 
-        max_batch_N = 0
+        if len(simulation_ids) == 0:
+            CobaConfig.Logger.log(f"No simulations were found with a source matching {source_pattern}")
 
-        indexes     = cast(Dict[int,List[int  ]], collections.defaultdict(list))
-        incounts    = cast(Dict[int,List[int  ]], collections.defaultdict(list))
-        inmeans     = cast(Dict[int,List[float]], collections.defaultdict(list))
-        invariances = cast(Dict[int,List[float]], collections.defaultdict(list))
-        cucounts    = cast(Dict[int,List[int  ]], collections.defaultdict(list))
-        cumeans     = cast(Dict[int,List[float]], collections.defaultdict(list))
-        cuvariances = cast(Dict[int,List[float]], collections.defaultdict(list))
+        if len(learner_ids) == 0 or len(simulation_ids) == 0:
+            return
 
-        for learner_id, learner_batches in grouped_batches:
+        learner_ids = sorted(learner_ids, key=lambda id: learner_names[id])
 
-            cucount    = 0
-            cumean     = OnlineMean()
-            cuvariance = OnlineVariance()
+        if err_type is None and len(sources) == 1: err_type = 'se'
+        if err_type is None and len(sources) >= 2: err_type = 'sd'
 
-            Ns, Rs = list(zip(*[ (b.N, b.reward) for b in learner_batches ]))
+        progressives: Dict[int,List[Sequence[float]]] = collections.defaultdict(list)
 
-            Ns = list(zip(*Ns))
-            Rs = list(zip(*Rs))
+        for simulation_id, learner_id in product(simulation_ids,learner_ids):
+            
+            if (simulation_id,learner_id) not in self._interactions: continue
 
-            for batch_index, batch_Ns, batch_Rs in zip(count(), Ns,Rs):
+            rewards = self._interactions[(simulation_id,learner_id)]["reward"]
 
-                incount    = 0
-                inmean     = OnlineMean()
-                invariance = OnlineVariance()
+            if span is None or span >= len(rewards):
+                cumwindow  = list(accumulate(rewards))
+                cumdivisor = list(range(1,len(cumwindow)+1))
+            
+            elif span == 1:
+                cumwindow  = list(rewards)
+                cumdivisor = [1]*len(cumwindow)
 
-                for N, reward in zip(batch_Ns, batch_Rs):
-                    
-                    max_batch_N = max(N, max_batch_N)
-                    
-                    incount     = incount + 1
-                    inmean      .update(reward)
-                    invariance  .update(reward)
-                    cucount     = cucount + 1
-                    cumean      .update(reward)
-                    cuvariance  .update(reward)
+            else:
+                alpha = 2/(1+span)
+                cumwindow  = list(accumulate(rewards          , lambda a,c: c + (1-alpha)*a))
+                cumdivisor = list(accumulate([1.]*len(rewards), lambda a,c: c + (1-alpha)*a)) #type: ignore
 
-                #sanity check, sorting above (in theory) should take care of this...
-                #if this isn't the case then the cu* values will be incorrect...
-                assert indexes[learner_id] == [] or batch_index > indexes[learner_id][-1]
-
-                incounts[learner_id].append(incount)
-                indexes[learner_id].append(batch_index)
-                inmeans[learner_id].append(inmean.mean)
-                invariances[learner_id].append(invariance.variance)
-                cucounts[learner_id].append(cucount)
-                cumeans[learner_id].append(cumean.mean)
-                cuvariances[learner_id].append(cuvariance.variance)
+            progressives[learner_id].append(list(map(truediv, cumwindow, cumdivisor)))
 
         import matplotlib.pyplot as plt #type: ignore
+        import numpy as np #type: ignore
+
+        if not progressives:
+            CobaConfig.Logger.log("No interaction data was found for plot_learners.")
+            return
+        
+        full_figure = ax is None
+
+        if full_figure:
+            fig = plt.figure(figsize=figsize)
+            ax = fig.add_subplot(1,1,1) #type: ignore
+
+        for i,learner_id in enumerate(learner_ids):
+
+            label = self._learners[learner_id]["full_name"]
+            Z     = list(zip(*progressives[learner_id]))
+            
+            if not Z: continue
+
+            N     = [ len(z) for z in Z        ]
+            Y     = [ sum(z)/len(z) for z in Z ]
+            X     = list(range(1,len(Y)+1))
+
+            start_idx = int(start*len(X)) if start <  1 else int(start)
+            end_idx   = int(end*len(X))   if end   <= 1 else int(end)
+
+            end_idx   = len(X) if end_idx   > len(X) else end_idx
+            start_idx = 0      if start_idx < 0      else start_idx
+
+            if start_idx >= end_idx:
+                CobaConfig.Logger.log("The plot's given end <= start making plotting impossible.")
+                return
+
+            X = X[start_idx:end_idx]
+            Y = Y[start_idx:end_idx]
+            Z = Z[start_idx:end_idx]
+
+            if len(X) == 0: continue
+
+            #this is much faster than python's native stdev
+            #and more or less free computationally so we always
+            #calculate it regardless of if they are showing them
+            #we are using the identity Var[Y] = E[Y^2]-E[Y]^2
+            Y2 = [ sum([zz**2 for zz in z])/len(z) for z in Z ]
+            SD = [ (y2-y**2)**(1/2) for y,y2 in zip(Y,Y2)     ]
+            SE = [ sd/(n**(1/2)) for sd,n in zip(SD,N)        ]
+
+            err_every = int(len(X)*err_every) if err_every < 1 else err_every
+            err_start = int(X[0] + i*len(X)*err_every**2) if err_every < 1 else err_every
+
+            if not err_every:
+               ax.plot(X, Y,label=label)
+            else:
+                yerr = SE if err_type.lower() == 'se' else SD #type: ignore
+                ax.errorbar(X, Y, yerr=yerr, elinewidth=0.5, errorevery=(err_start,err_every), label=label)
+
+        if full_figure:
+            ax.set_xticks(np.clip(ax.get_xticks(), min(X), max(X)))
+            ax.set_title (("Instantaneous" if span == 1 else "Progressive" if span is None else f"Span {span}") + " Reward")
+            ax.set_ylabel("Reward")
+            ax.set_xlabel("Interactions")
+
+            #make room for the legend
+            scale = 0.65
+            box1 = ax.get_position()
+            ax.set_position([box1.x0, box1.y0 + box1.height * (1-scale), box1.width, box1.height * scale])
+
+            # Put a legend below current axis
+            fig.legend(*ax.get_legend_handles_labels(), loc='upper center', bbox_to_anchor=(.5, .3), ncol=1, fontsize='medium') #type: ignore
+
+            plt.show()
+
+    def plot_shuffles(self, 
+        source_pattern:str = ".*", 
+        learner_pattern:str = ".*", 
+        span:int=None,
+        start:Union[int,float]=0.05,
+        end:Union[int,float] = 1.,
+        err_every:Union[int,float]=.05,
+        err_type:str=None,
+        figsize=(8,6)) -> None:
+        """This plots the performance of a single Learner on multiple shuffles of the same source. It gives a sense of the
+            variance in peformance for the learner on the given simulation source. This plot is valuable if looking for a 
+            reliable learner on a fixed problem.
+
+        Args:
+            source_pattern: The pattern to match when determining which simulations to include in the plot. The "source" 
+                matched against is either the "source" column in the simulations table or the first item in the list in 
+                the simulation 'pipes' column. The simulations can be seen most easily by Result.simulations.to_pandas().
+            learner_pattern: The pattern to match against the 'full_name' column in learners to determine which learners
+                to include in the plot. In the case of multiple matches only the last match is kept. The learners table in
+                Result can be examined via result.learners.to_pandas().
+            span: In general this indicates how many previous evaluations to average together. In practice this works
+                identically to ewm span value in the Pandas API. Additionally, if span equals None then all previous 
+                rewards are averaged together and that value is plotted. Compare this to span = 1 WHERE only the current 
+                reward is plotted for each interaction.
+            start: Determines at which interaction the plot will start at. If start is greater than 1 we assume start is
+                an interaction index. If start is less than 1 we assume start is the percent of interactions to skip
+                before starting the plot.
+            end: Determines at which interaction the plot will stop at. If end is greater than 1 we assume end is
+                an interaction index. If end is less than 1 we assume end is the percent of interactions to end on.
+            err_every: Determines frequency of bars indicating the standard deviation of the population should be drawn. 
+                Standard deviation gives a sense of how well the plotted average represents the underlying distribution. 
+                Standard deviation is most valuable when plotting against multiple simulations. If plotting against a single 
+                simulation standard error may be a more useful indicator of confidence. The value for sd_every should be
+                between 0 to 1 and will determine how frequently the standard deviation bars are drawn.
+            err_type: Determines what the error bars are. Valid types are `None`, 'se', and 'sd'. If err_type is None then 
+                plot will use SEM when there is only one source simulation otherwise it will use SD. Otherwise plot will
+                display the standard error of the mean for 'se' and the standard deviation for 'sd'.
+
+        """
+
+        PackageChecker.matplotlib('Result.standard_plot')
+
+        simulation_ids     = []
+        simulation_sources = []
+        learner_id         = None
+
+        if isinstance(source_pattern, Number):
+            source_pattern = f'(\D|^){source_pattern}(\D|$)'
+
+        if isinstance(learner_pattern, Number):
+            learner_pattern = f'(\D|^){learner_pattern}(\D|$)'
+        
+        for simulation in self._simulations:
+            
+            if 'source' in simulation:
+                sim_source = simulation['source']
+            else:
+                #this is a hack...
+                source_end = max(simulation['pipe'].find("},{"), simulation['pipe'].find(","))
+                source_end = source_end if source_end > -1 else len(simulation['pipe'])
+                sim_source = simulation['pipe'][0:source_end]
+
+            if re.search(source_pattern, sim_source):
+                simulation_ids.append(simulation['simulation_id'])
+                simulation_sources.append(sim_source)
+
+        for learner in self._learners:
+            if re.search(learner_pattern,learner['full_name']):
+                learner_id = learner['learner_id']
+
+        progressives: List[Sequence[float]] = []
+
+        if len(simulation_ids) == 0:
+            CobaConfig.Logger.log(f"No simulation was found with a source matching '{source_pattern}' when executing `plot_shuffles`.")
+            return
+
+        if learner_id is None:
+            CobaConfig.Logger.log(f"No learner was found who's fullname matched '{learner_pattern}' when executing `plot_shuffles`.")
+            return
+
+        for simulation_id in simulation_ids:
+            
+            if (simulation_id,learner_id) not in self._interactions: continue
+
+            rewards = self._interactions[(simulation_id,learner_id)]["reward"]
+
+            if span is None or span >= len(rewards):
+                cumwindow  = list(accumulate(rewards))
+                cumdivisor = list(range(1,len(cumwindow)+1))
+
+            elif span == 1:
+                cumwindow  = list(rewards)
+                cumdivisor = [1]*len(cumwindow)
+
+            else:
+                cumwindow  = list(accumulate(rewards))
+                cumwindow  = cumwindow + [0] * span
+                cumwindow  = [ cumwindow[i] - cumwindow[i-span] for i in range(len(cumwindow)-span) ]
+                cumdivisor = list(range(1, span)) + [span]*(len(cumwindow)-span+1)
+
+            progressives.append(list(map(truediv, cumwindow, cumdivisor)))
+
+        if not progressives:
+            CobaConfig.Logger.log("No interaction data was found for the plot_shuffles.")
+            return
+
+        import matplotlib.pyplot as plt #type: ignore
+        import numpy as np #type: ignore
 
         fig = plt.figure(figsize=figsize)
-
-        index_unit = "Interactions" if max_batch_N ==1 else "Batches"
         
-        ax1 = fig.add_subplot(1,2,1) #type: ignore
-        ax2 = fig.add_subplot(1,2,2) #type: ignore
+        ax = fig.add_subplot(1,1,1) #type: ignore
 
-        for learner_id in learners:
-            _plot(ax1, learners[learner_id].full_name, indexes[learner_id], inmeans[learner_id], invariances[learner_id], incounts[learner_id])
+        color = next(ax._get_lines.prop_cycler)['color']
 
-        ax1.set_title(f"Instantaneous Reward")
-        ax1.set_ylabel("Reward")
-        ax1.set_xlabel(f"{index_unit}")
+        for shuffle in progressives:
 
-        for learner_id in learners:
-            _plot(ax2, learners[learner_id].full_name, indexes[learner_id], cumeans[learner_id], cuvariances[learner_id], cucounts[learner_id])
+            Y     = shuffle
+            X     = list(range(1,len(Y)+1))
 
-        ax2.set_title("Progressive Reward")
-        #ax2.set_ylabel("Reward")
-        ax2.set_xlabel(f"{index_unit}")
+            start_idx = int(start*len(X)) if start <  1 else int(start)
+            end_idx   = int(end*len(X))   if end   <= 1 else int(end)
 
-        (bot1, top1) = ax1.get_ylim()
-        (bot2, top2) = ax2.get_ylim()
+            end_idx   = len(X) if end_idx   > len(X) else end_idx
+            start_idx = 0      if start_idx < 0      else start_idx
 
-        ax1.set_ylim(min(bot1,bot2), max(top1,top2))
-        ax2.set_ylim(min(bot1,bot2), max(top1,top2))
+            if start_idx >= end_idx:
+                CobaConfig.Logger.log("The plot's given end <= start making plotting impossible.")
+                return
 
-        scale = 0.5
-        box1 = ax1.get_position()
-        box2 = ax2.get_position()
-        ax1.set_position([box1.x0, box1.y0 + box1.height * (1-scale), box1.width, box1.height * scale])
-        ax2.set_position([box2.x0, box2.y0 + box2.height * (1-scale), box2.width, box2.height * scale])
+            X = X[start_idx:end_idx]
+            Y = Y[start_idx:end_idx]
 
-        # Put a legend below current axis
-        fig.legend(*ax1.get_legend_handles_labels(), loc='upper center', bbox_to_anchor=(.5, .3), ncol=1, fontsize='small') #type: ignore
+            ax.plot(X, Y, label='_nolegend_', color=color, alpha=0.15)
+
+        plt.gca().set_prop_cycle(None)
+        self.plot_learners(source_pattern, learner_pattern, span=span, start=start, end=end, err_every=err_every, err_type=err_type, ax=ax)
+
+        ax.set_xticks(np.clip(ax.get_xticks(), min(X), max(X)))
+
+        simulation_sources = list(set(simulation_sources))
+        source = simulation_sources[0] if len(simulation_sources) == 1 else str(simulation_sources)
+
+        ax.set_title (("Instantaneous" if span == 1 else "Progressive" if span is None else f"Span {span}") + f" Reward for '{source}'")
+        ax.set_ylabel("Reward")
+        ax.set_xlabel("Interactions")
+
+        #make room for the legend
+        scale = 0.85
+        box1 = ax.get_position()
+        ax.set_position([box1.x0, box1.y0 + box1.height * (1-scale), box1.width, box1.height * scale])
+
+        #Put a legend below current axis
+        fig.legend(*ax.get_legend_handles_labels(), loc='upper center', bbox_to_anchor=(.5, .1), ncol=1, fontsize='medium') #type: ignore
 
         plt.show()
 
     def __str__(self) -> str:
-        return str({ "Learners": len(self.learners), "Simulations": len(self.simulations), "Interactions": sum([len(b.reward) for b in self.batches.to_tuples()]) })
+        return str({ "Learners": len(self._learners), "Simulations": len(self._simulations), "Interactions": len(self._interactions) })
 
     def __repr__(self) -> str:
         return str(self)
 
 class ResultPromote(Filter):
 
-    CurrentVersion = 2
+    CurrentVersion = 3
 
     def filter(self, items: Iterable[Any]) -> Iterable[Any]:
         items_iter = iter(items)
@@ -433,5 +708,26 @@ class ResultPromote(Filter):
 
                 items   = promoted_items
                 version = 2
+
+            if version == 2:
+
+                promoted_items = [["version",3]]
+
+                for transaction in items:
+                    
+                    #upgrade all reward entries to the packed format which will now allow array types and dict types.
+                    if transaction[0] == "B":
+                        rewards = transaction[2]["reward"]
+                        del transaction[2]["reward"]
+                        transaction[2]["_packed"] = {"reward": rewards}
+                    
+                    #Change from B to I to be consistent with result property name: `interactions`
+                    if transaction[0] == "B": 
+                        transaction[0] = "I"
+                    
+                    promoted_items.append(transaction)
+
+                items   = promoted_items
+                version = 3
 
         return items

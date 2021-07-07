@@ -7,7 +7,7 @@ from coba.pipes import Source
 from coba.learners import Learner
 
 from coba.benchmarks.results import Result
-from coba.benchmarks.tasks import BenchmarkTask, Tasks, Unfinished, GroupBySource
+from coba.benchmarks.tasks import BenchmarkTask, Tasks, Unfinished, ChunkBySource
 
 #for testing purposes
 class ModuloLearner(Learner):
@@ -94,8 +94,8 @@ class Unifinshed_Tests(unittest.TestCase):
 
         restored = Result()
 
-        restored.simulations.add_row(simulation_id=0,batch_count=1)
-        restored.batches.add_row(simulation_id=0,learner_id=1)
+        restored._simulations[0]      = dict()
+        restored._interactions[(0,1)] = dict()
 
         sim1 = LambdaSimulation(5, lambda i: i, lambda i,c: [0,1,2], lambda i,c,a: cast(float,a))
         lrn1 = ModuloLearner("1")
@@ -119,31 +119,6 @@ class Unifinshed_Tests(unittest.TestCase):
         self.assertEqual(0, unfinished_tasks[1].lrn_id)
         self.assertEqual(1, unfinished_tasks[2].lrn_id)
 
-    def test_one_simulation_empty(self):
-
-        restored = Result()
-        restored.simulations.add_row(simulation_id=0, batch_count=0)
-
-        sim1 = LambdaSimulation(5, lambda i: i, lambda i,c: [0,1,2], lambda i,c,a: cast(float,a))
-        lrn1 = ModuloLearner("1")
-
-        tasks = [
-            BenchmarkTask(0,0,0,sim1,lrn1,10),
-            BenchmarkTask(0,0,1,sim1,lrn1,10),
-            BenchmarkTask(0,1,0,sim1,lrn1,10),
-            BenchmarkTask(0,1,1,sim1,lrn1,10),
-        ]
-
-        unfinished_tasks = list(Unfinished(restored).filter(tasks))
-
-        self.assertEqual(2, len(unfinished_tasks))
-
-        self.assertEqual(1, unfinished_tasks[0].sim_id)
-        self.assertEqual(1, unfinished_tasks[1].sim_id)
-
-        self.assertEqual(0, unfinished_tasks[0].lrn_id)
-        self.assertEqual(1, unfinished_tasks[1].lrn_id)
-
 class GroupBySource_Tests(unittest.TestCase):
 
     def test_one_group(self):
@@ -157,7 +132,7 @@ class GroupBySource_Tests(unittest.TestCase):
             BenchmarkTask(0,1,1,sim1,lrn1,10),
         ]
 
-        groups = list(GroupBySource().filter(tasks))
+        groups = list(ChunkBySource().filter(tasks))
         tasks  = list(groups[0])
         
         self.assertEqual(1, len(groups))
@@ -175,7 +150,7 @@ class GroupBySource_Tests(unittest.TestCase):
             BenchmarkTask(1,1,1,sim2,lrn1,10),
         ]
 
-        groups = list(GroupBySource().filter(tasks))
+        groups = list(ChunkBySource().filter(tasks))
         
         group_1_tasks = list(groups[0])
         group_2_tasks = list(groups[1])

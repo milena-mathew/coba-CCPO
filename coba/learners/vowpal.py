@@ -3,13 +3,13 @@
 TODO Add unittests
 """
 
+import re
 import collections
 
 from os import devnull
-from typing import Any, Dict, Union, Sequence, overload
+from typing import Any, Dict, Union, Sequence, overload, cast, Optional
 
-from vowpalwabbit import pyvw
-
+from coba.config import CobaException
 from coba.utilities import PackageChecker, redirect_stderr
 from coba.simulations import Context, Action
 from coba.learners.core import Learner, Key
@@ -35,7 +35,7 @@ def _features_format(features: Union[Context,Action]) -> str:
     if isinstance(features, dict):
         return " ". join([_feature_format(k,v) for k,v in features.items() if v is not None and v != 0 ])
 
-    if isinstance(features, tuple) and len(features) == 2 and isinstance(features[0], tuple):
+    if isinstance(features, tuple) and len(features) == 2 and isinstance(features[0], tuple) and isinstance(features[1], tuple):
         return " ". join([_feature_format(k,v) for k,v in zip(features[0], features[1]) if v is not None and v != 0 ])
 
     if not isinstance(features, collections.Sequence):
@@ -72,7 +72,7 @@ class VowpalLearner(Learner):
     """
 
     @overload
-    def __init__(self, *, epsilon: float, adf: bool = True, seed: int = None) -> None:
+    def __init__(self, *, epsilon: float = 0.1, adf: bool = True, seed: Optional[int] = 1) -> None:
         """Instantiate a VowpalLearner.
         Args:
             epsilon: A value between 0 and 1. If provided exploration will follow epsilon-greedy.
@@ -80,22 +80,22 @@ class VowpalLearner(Learner):
         ...
 
     @overload
-    def __init__(self, *, bag: int, adf: bool = True, seed: int = None) -> None:
+    def __init__(self, *, bag: int, adf: bool = True, seed: Optional[int] = 1) -> None:
         """Instantiate a VowpalLearner.
         Args:
             bag: An integer value greater than 0. This value determines how many separate policies will be
                 learned. Each policy will be learned from bootstrap aggregation, making each policy unique. 
-                For each choice one policy will be selected according to a uniform distribution and followed.
+                When predicting one policy will be selected according to a uniform distribution and followed.
         """
         ...
 
     @overload
-    def __init__(self, *, cover: int, seed: int = None) -> None:
+    def __init__(self, *, cover: int, seed: Optional[int] = 1) -> None:
         """Instantiate a VowpalLearner.
         Args:
             cover: An integer value greater than 0. This value value determines how many separate policies will be
                 learned. These policies are learned in such a way to explicitly optimize policy diversity in order
-                to control exploration. For each choice one policy will be selected according to a uniform distribution
+                to control exploration. When predicting one policy will be selected according to a uniform distribution
                 and followed. For more information on this algorithm see Agarwal et al. (2014).
         References:
             Agarwal, Alekh, Daniel Hsu, Satyen Kale, John Langford, Lihong Li, and Robert Schapire. "Taming 
@@ -105,7 +105,7 @@ class VowpalLearner(Learner):
         ...
 
     @overload
-    def __init__(self, *, softmax: float, seed: int = None) -> None:
+    def __init__(self, *, softmax: float, seed: Optional[int] = 1) -> None:
         """Instantiate a VowpalLearner.
         Args:
             softmax: An exploration parameter with 0 indicating uniform exploration is desired and infinity
@@ -115,18 +115,38 @@ class VowpalLearner(Learner):
         ...
 
     @overload
-    def __init__(self, *, adf: bool, args:str) -> None:
+    def __init__(self, args:str) -> None:
         ...
+        """Instantiate a VowpalLearner.
+        Args:
+            args: A string of command line arguments which instantiates a Vowpal Wabbit contextual bandit learner. 
+                For examples and documentation on how to instantiate VW learners from command line arguments see 
+                https://github.com/VowpalWabbit/vowpal_wabbit/wiki/Contextual-Bandit-algorithms. It is assumed that
+                either the --cb_explore or --cb_explore_adf flag is used. When formatting examples for VW context
+                features are namespaced with `s` and action features, when relevant, are namespaced with with `a`.
+        """
 
-    def __init__(self,  **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         """Instantiate a VowpalLearner with the requested VW learner and exploration."""
 
-        PackageChecker.vowpalwabbit('VowpalLearner.__init__')
+        PackageChecker.vowpalwabbit('VowpalLearner')
 
-        self._params = {}
         interactions = "--interactions ssa --interactions sa --ignore_linear s"
 
-        if 'epsilon' in kwargs:
+        if not args and 'seed' not in kwargs:
+            kwargs['seed'] = 1
+
+        if not args and all(e not in kwargs for e in ['epsilon', 'softmax', 'bag', 'cover', 'args']): 
+            kwargs['epsilon'] = 0.1
+
+        if len(args) > 0:
+            self._adf  = "--cb_explore_adf" in args[0]
+            self._args = cast(str,args[0])
+
+            self._args = re.sub("--cb_explore_adf\s+", '', self._args, count=1)
+            self._args = re.sub("--cb_explore(\s+\d+)?\s+", '', self._args, count=1)
+
+        elif 'epsilon' in kwargs:
             self._adf  = kwargs.get('adf', True)
             self._args = interactions + f" --epsilon {kwargs['epsilon']}"
 
@@ -142,16 +162,12 @@ class VowpalLearner(Learner):
             self._adf  = False
             self._args = interactions + f" --cover {kwargs['cover']}"
 
-        else:
-            self._adf  = kwargs['adf']
-            self._args = kwargs['args']
-
-        if 'seed' in kwargs:
+        if 'seed' in kwargs and kwargs['seed'] is not None:
             self._args += f" --random_seed {kwargs['seed']}"
 
         self._actions: Any = None
         self._vw           = None
-        
+
     @property
     def family(self) -> str:
         """The family of the learner.
@@ -168,13 +184,13 @@ class VowpalLearner(Learner):
         See the base class for more information
         """
 
-        return {'args': self._args}
+        return {'args': self._create_format(None)}
 
     def predict(self, key: Key, context: Context, actions: Sequence[Action]) -> Sequence[float]:
         """Determine a PMF with which to select the given actions.
 
         Args:
-            key: The key identifying the interaction we are choosing for.
+            key: The key identifying the interaction we are predicting for.
             context: The context we're currently in. See the base class for more information.
             actions: The actions to choose from. See the base class for more information.
 
@@ -183,27 +199,30 @@ class VowpalLearner(Learner):
         """
 
         if self._vw is None:
-            cb_explore = "" if "cb_explore" in self._args else "--cb_explore_adf" if self._adf else f"--cb_explore {len(actions)}"
-
-            self._args = cb_explore + " " + self._args
-            
+            from vowpalwabbit import pyvw #type: ignore
             # vowpal has an annoying warning that is written to stderr whether or not we provide
             # the --quiet flag. Therefore, we temporarily redirect all stderr output to null so that
             # this warning isn't shown during creation. It should be noted this isn't thread-safe
             # so if you are here because of strange problems with threads we may just need to suck
             # it up and accept that there will be an obnoxious warning message.
             with open(devnull, 'w') as f, redirect_stderr(f):
-                self._vw   = pyvw.vw(self._args + " --quiet")
+                self._vw = pyvw.vw(self._create_format(actions) + " --quiet")
 
-        probs = self._vw.predict(self._predict_format(context, actions))
+        assert self._vw is not None, "Something went wrong and vw was not initialized"
+
+        probs = self._vw.predict(VowpalLearner._predict_format(self._adf, context, actions))
 
         self._set_actions(key, actions)
 
-        if not self._adf:
-            #in this case probs are always in order of self._actions but we want to return in order of actions
-            return [ probs[self._actions.index(action)] for action in actions ]
-        else:
+        if self._adf:
             return probs
+
+        else:
+            if any(action not in self._actions for action in actions) or len(actions) != len(self._actions):
+                raise CobaException("It appears that actions are changing between predictions. When this happens you need to use VW's `--cb_explore_adf`.")
+
+            #in this case probs will be in order of self._actions but we want to return in order of actions
+            return [ probs[self._actions.index(action)] for action in actions ]            
 
     def learn(self, key: Key, context: Context, action: Action, reward: float, probability: float) -> None:
         """Learn from the given interaction.
@@ -216,33 +235,43 @@ class VowpalLearner(Learner):
             probability: The probability that the given action was taken.
         """
 
+        assert self._vw is not None, "You must call predict before learn in order to initialize the VW learner"
+
         actions = self._get_actions(key)
         
-        self._vw.learn(self._learn_format(probability, actions, context, action, reward))
+        self._vw.learn(self._learn_format(self._adf, probability, actions, context, action, reward))
 
-    def _predict_format(self, context, actions) -> str:
-        if self._adf:
+    def _create_format(self, actions) -> str:
+        
+        cb_explore = "--cb_explore_adf" if self._adf else f"--cb_explore {len(actions)}" if actions else "--cb_explore"
+        
+        return cb_explore + " " + self._args
+
+    @staticmethod
+    def _predict_format(adf, context, actions) -> str:
+        if adf:
             vw_context = None if context is None else f"shared |s {_features_format(context)}"
             vw_actions = [ f"|a {_features_format(a)}" for a in actions]
             return "\n".join(filter(None,[vw_context, *vw_actions]))
         else:
             return f"|s {_features_format(context)}"
 
-    def _learn_format(self, prob, actions, context, action, reward) -> str:
-        if self._adf:
-            vw_context   = None if context is None else f"shared |s {_features_format(context)}"
-            vw_rewards  = [ "" if a != action else f"0:{-reward}:{prob}" for a in actions ]
-            vw_actions  = [ f"{a}:1" for a in actions]
-            vw_observed = [ f"{r} |a {a}" for r,a in zip(vw_rewards,vw_actions) ]
+    @staticmethod
+    def _learn_format(adf, prob, actions, context, action, reward) -> str:
+        if adf:
+            vw_context  = None if context is None else f"shared |s {_features_format(context)}"
+            vw_rewards  = [ "" if a != action else f"0:{-reward}:{prob} " for a in actions ]
+            vw_actions  = [ f"|a {_features_format(a)}" for a in actions]
+            vw_observed = [ f"{r}{a}" for r,a in zip(vw_rewards,vw_actions) ]
             return "\n".join(filter(None,[vw_context, *vw_observed]))
         else:
             return f"{actions.index(action)+1}:{-reward}:{prob} |s {_features_format(context)}"
 
     def _set_actions(self, key: Key, actions: Sequence[Action]) -> None:
-        
+
         if self._actions is None and not self._adf:
             self._actions = actions
-        
+
         if self._actions is None and self._adf:
             self._actions = {}
 

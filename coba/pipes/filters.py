@@ -74,11 +74,40 @@ class ResponseToLines(Filter[Response, Iterable[str]]):
         return item.content.decode('utf-8').split('\n')
 
 class JsonEncode(Filter[Any, str]):
-    def __init__(self, encoder: json.encoder.JSONEncoder = CobaJsonEncoder()) -> None:
-        self._encoder = encoder
+
+    def _intify(self,obj):
+
+        if isinstance(obj,float) and obj.is_integer():
+            return int(obj)
+
+        if isinstance(obj,tuple):
+            obj = list(obj)
+
+        if isinstance(obj,list):
+            for i in range(len(obj)):
+                obj[i] = self._intify(obj[i])
+
+        if isinstance(obj,dict):
+            for key in obj:
+                obj[key] = self._intify(obj[key])
+
+        return obj
+
+    def __init__(self, minify=True) -> None:
+        self._minify = minify
+
+        if self._minify:
+            self._encoder = CobaJsonEncoder(separators=(',', ':'))
+        else:
+            self._encoder = CobaJsonEncoder()
 
     def filter(self, item: Any) -> str:
-        return self._encoder.encode(item)
+        if self._minify:
+            #JsonEncoder writes floats with .0 regardless of if they are integers
+            #Therefore we preprocess and turn all float whole numbers into integers
+            return self._encoder.encode(self._intify(item))
+        else:
+            return self._encoder.encode(item)
 
 class JsonDecode(Filter[str, Any]):
     def __init__(self, decoder: json.decoder.JSONDecoder = CobaJsonDecoder()) -> None:
@@ -187,9 +216,9 @@ class CsvReader(Filter[Iterable[str], _T_Data]):
         try:
             row2 = next(lines)
         except StopIteration:
-            row2 = None
+            row2 = []
 
-        data_row = row2 if row2 is not None else row1
+        data_row = row2 if row2 else row1
 
         is_sparse  = data_row[0].startswith("{") and data_row[-1].endswith("}")
 
@@ -233,8 +262,9 @@ class LibSvmReader(Filter[Iterable[str], _T_Data]):
 
     def filter(self, input_lines: Iterable[str]) -> _T_Data:
 
+        indexer = count(1)
         output_lines: List[Tuple[Tuple[int,...], Tuple[Any,...]]] = []
-        feature_index = defaultdict(lambda x=count(1): next(x))
+        feature_index: Dict[str, int] = defaultdict(lambda: next(indexer))
 
         for input_line in filter(None,input_lines):
 

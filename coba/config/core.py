@@ -13,6 +13,7 @@ from typing import Dict, Any
 from coba.registry import CobaRegistry
 from coba.config.loggers import Logger
 from coba.config.cachers import Cacher
+from coba.config.exceptions import CobaFatal
 
 class CobaConfig_meta(type):
     """To support class properties before python 3.9 we must implement our properties directly 
@@ -38,34 +39,52 @@ class CobaConfig_meta(type):
             potential_coba_config = search_path / ".coba"
 
             if potential_coba_config.exists() and potential_coba_config.read_text().strip() != "":
-                file_config = json.loads(potential_coba_config.read_text())
+                try:
+                    file_config = json.loads(potential_coba_config.read_text())
 
-                if not isinstance(file_config, dict):
-                    raise Exception(f"The file at {potential_coba_config} should be a json object.")
+                    if not isinstance(file_config, dict):
+                        raise Exception(f"The file at {potential_coba_config} should be a json object.")
 
-                CobaConfig_meta._replace_current_directory(file_config, str(search_path))
+                    CobaConfig_meta._resolve_and_expand_paths(file_config, str(search_path))
 
-                config.update(file_config)
+                    config.update(file_config)
+                except Exception as e:
+                    try:
+                        ipython = get_ipython() #type: ignore
+
+                        def exception_handler(exception_type, exception, traceback):
+                            print("%s: %s" % (exception_type.__name__, exception), file=sys.stderr)
+
+                        ipython._showtraceback = exception_handler
+                    except:
+                        sys.tracebacklimit = 0
+
+                    raise CobaFatal(f"The coba configuration file at {potential_coba_config} has the following formatting error, "
+                        f"'{str(e)}'. To protect against unexpected behavior execution is being stopped until this is fixed."
+                    ) from None
 
         return config
 
     @staticmethod
-    def _replace_current_directory(config_dict: dict, current_dir:str):
+    def _resolve_and_expand_paths(config_dict: dict, current_dir:str):
         for key,item in config_dict.items():
             if isinstance(item, dict):
-                CobaConfig_meta._replace_current_directory(item, current_dir)
+                CobaConfig_meta._resolve_and_expand_paths(item, current_dir)
 
-            if isinstance(item,str) and item.strip().startswith("./"):
-                config_dict[key] = item.replace(".", current_dir, 1).replace("\\", "/")
+            if isinstance(item,str) and item.strip().startswith("~/"):
+                config_dict[key] = str(Path(item).expanduser().resolve())
+
+            if isinstance(item,str) and (item.strip().startswith("../") or item.strip().startswith("./")):
+                config_dict[key] = str(Path(current_dir,item).resolve())
 
     @staticmethod
     def _load_config() -> Dict[str,Any]:
-        
+
         config: Dict[str,Any] = {
             "api_keys" : collections.defaultdict(lambda:None),
             "cacher"   : "NoneCacher",
             "logger"   : { "IndentLogger": "ConsoleSink" },
-            "benchmark": {"processes": 1, "maxtasksperchild": None, "group_by": "source", "file_fmt": "BenchmarkFileV2"}
+            "benchmark": {"processes": 1, "maxtasksperchild": None, "chunk_by": "source", "file_fmt": "BenchmarkFileV2"}
         }
 
         for key,value in CobaConfig_meta._load_file_configs().items():

@@ -3,7 +3,7 @@
 import math
 
 from collections import defaultdict
-from typing import Any, Dict, Tuple, Sequence, Optional, cast
+from typing import Any, Dict, Tuple, Sequence, Optional, cast, Hashable
 
 from coba.simulations import Context, Action
 from coba.statistics import OnlineVariance
@@ -26,7 +26,7 @@ class RandomLearner(Learner):
         
         See the base class for more information
         """
-        return { }
+        return {}
 
     def predict(self, key: Key, context: Context, actions: Sequence[Action]) -> Sequence[float]:
         """Choose a random action from the action set.
@@ -56,7 +56,7 @@ class RandomLearner(Learner):
 class EpsilonBanditLearner(Learner):
     """A lookup table bandit learner with epsilon-greedy exploration."""
 
-    def __init__(self, epsilon: float, include_context: bool = False) -> None:
+    def __init__(self, epsilon: float) -> None:
         """Instantiate an EpsilonBanditLearner.
 
         Args:
@@ -64,11 +64,10 @@ class EpsilonBanditLearner(Learner):
             include_context: If true lookups are a function of context-action otherwise they are a function of action.
         """
 
-        self._epsilon         = epsilon
-        self._include_context = include_context
+        self._epsilon = epsilon
 
-        self._N: Dict[Tuple[Context, Action], int            ] = defaultdict(int)
-        self._Q: Dict[Tuple[Context, Action], Optional[float]] = defaultdict(int)
+        self._N: Dict[Hashable, int            ] = defaultdict(int)
+        self._Q: Dict[Hashable, Optional[float]] = defaultdict(int)
 
     @property
     def family(self) -> str:
@@ -76,10 +75,8 @@ class EpsilonBanditLearner(Learner):
 
         See the base class for more information
         """
-        if self._include_context:
-            return "cb_epsilongreedy"
-        else:
-            return "bandit_epsilongreedy"
+
+        return "bandit_epsilongreedy"
 
     @property
     def params(self) -> Dict[str, Any]:
@@ -101,7 +98,7 @@ class EpsilonBanditLearner(Learner):
             The probability of taking each action. See the base class for more information.
         """
 
-        keys        = [ self._key(context,action) for action in actions ]
+        keys        = [ self._key(action) for action in actions ]
         values      = [ self._Q[key] for key in keys ]
         max_value   = None if set(values) == {None} else max(v for v in values if v is not None)
         max_indexes = [i for i in range(len(values)) if values[i]==max_value]
@@ -122,16 +119,16 @@ class EpsilonBanditLearner(Learner):
             probability: The probability that the given action was taken.
         """
 
-        sa_key = self._key(context,action)
-        alpha  = 1/(self._N[sa_key]+1)
+        a_key = self._key(action)
+        alpha = 1/(self._N[a_key]+1)
 
-        old_Q = cast(float, 0 if self._Q[sa_key] is None else self._Q[sa_key])
+        old_Q = cast(float, 0 if self._Q[a_key] is None else self._Q[a_key])
 
-        self._Q[sa_key] = (1-alpha) * old_Q + alpha * reward
-        self._N[sa_key] = self._N[sa_key] + 1
+        self._Q[a_key] = (1-alpha) * old_Q + alpha * reward
+        self._N[a_key] = self._N[a_key] + 1
 
-    def _key(self, context: Context, action: Action) -> Tuple[Context,Action]:
-        return (context, action) if self._include_context else (None, action)
+    def _key(self, action: Action) -> Hashable:
+        return tuple(action.items()) if isinstance(action,dict) else action
 
 class UcbBanditLearner(Learner):
     """This is an implementation of Auer et al. (2002) UCB1-Tuned algorithm.
@@ -180,6 +177,8 @@ class UcbBanditLearner(Learner):
             The probability of taking each action. See the base class for more information.
         """
 
+        actions = [ self._key(a) for a in actions ]
+
         #initialize by playing every action once
         if self._init_a < len(actions):
             self._init_a += 1
@@ -205,6 +204,8 @@ class UcbBanditLearner(Learner):
 
         assert 0 <= reward and reward <= 1, "This algorithm assumes that reward has support in [0,1]."
 
+        action = self._key(action)
+
         if action not in self._m:
             self._m[action] = reward
         else:
@@ -213,6 +214,9 @@ class UcbBanditLearner(Learner):
         self._t         += 1
         self._s[action] += 1
         self._v[action].update(reward)
+
+    def _key(self, action: Action) -> Hashable:
+        return tuple(action.items()) if isinstance(action,dict) else action
 
     def _Avg_R_UCB(self, action: Action) -> float:
         """Produce the estimated upper confidence bound (UCB) for E[R|A].

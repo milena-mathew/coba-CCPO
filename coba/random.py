@@ -47,7 +47,7 @@ class CobaRandom:
         self._seed: int = std_random.randint(0,self._m_minus_1) if seed is None else seed
 
     def randoms(self, n:int=1) -> Sequence[float]:
-        """Generate `n` random numbers in [0,1].
+        """Generate `n` uniform random numbers in [0,1].
 
         Args:
             n: How many random numbers should be generated.
@@ -66,14 +66,20 @@ class CobaRandom:
 
         Returns:
             A new sequence with the order of items shuffled.
+
+        Remarks:
+            This is the Richard Durstenfeld's method popularized by Donald Knuth in The Art of Computer Programming.
+            This algorithm is unbiased (i.e., all possible permutations are equally likely to occur).
         """
 
         n = len(sequence)
         r = self.randoms(n)
         l = list(sequence)
 
-        for i in range(n):
-            j = min(int(i + (r[i] * (n-i))), n-1) #min() handles the edge case of r[i]==1
+        for i in range(0,n-1):
+
+            j = int(i + (r[i] * (n-i))) # i <= j <= n
+            j = min(j, n-1)             # i <= j <= n-1 (min handles the edge case of r[i]==1 which would make j=n)
             
             l[i], l[j] = l[j], l[i]
 
