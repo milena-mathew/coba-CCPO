@@ -5,8 +5,9 @@ This script requires that the matplotlib and vowpalwabbit packages be installed.
 
 from pathlib import Path
 
-from coba.learners import RandomLearner, EpsilonBanditLearner, VowpalLearner, UcbBanditLearner, CorralLearner
+from coba.learners import RandomLearner, EpsilonBanditLearner, VowpalLearner, UcbBanditLearner, CorralLearner, ChanceConstrainedOptimizer
 from coba.benchmarks import Benchmark
+import os
 
 #this line is required by Python in order to use multi-processing
 if __name__ == '__main__':
@@ -14,8 +15,13 @@ if __name__ == '__main__':
     #The existence check is only needed to provide a failsafe against different execution environments
     benchmark_file   = "bakeoff_short.json" if Path("bakeoff_short.json").exists() else "./examples/bakeoff_short.json"
     transaction_file = "bakeoff_short.log"  if Path("bakeoff_short.json").exists() else "./examples/bakeoff_short.log"
+    try:
+        os.unlink(transaction_file)
+    except Exception as e:
+        print(e)
 
     #First, we define the learners that we want to test
+    """
     learners = [
         RandomLearner(),
         UcbBanditLearner(),
@@ -23,6 +29,11 @@ if __name__ == '__main__':
         VowpalLearner(bag=5, seed=10),      #This learner requires that VowpalWabbit be installed
         VowpalLearner(epsilon=.1, seed=10), #This learner requires that VowpalWabbit be installed
         CorralLearner([VowpalLearner(bag=5, seed=10), VowpalLearner(epsilon=.1, seed=10)], eta=.075, T=300, seed=10),
+    ]
+    """
+    learners = [
+        VowpalLearner(bag=5, seed=10),      #This learner requires that VowpalWabbit be installed
+        ChanceConstrainedOptimizer(constraint=0.1, learning_rate=0.3, vw_kwargs={"bag":5, "seed":10})
     ]
 
     #Then we create our benchmark from the benchmark configuration file
