@@ -174,6 +174,36 @@ class MemorySimulation(Simulation):
     def reward(self) -> Reward:
         """The reward object which can observe rewards for pairs of actions and interaction keys."""
         return self._reward
+    
+class ConstrainedSimulation(Simulation):
+    """A Simulation implementation akin to MemorySimulation with an added constraint."""
+
+    def __init__(self, constraint, interactions: Sequence[Interaction], reward: Reward) -> None:
+        """Instantiate a MemorySimulation.
+
+        Args:
+            interactions: The sequence of interactions in this simulation.
+            reward: The reward object to observe in this simulation.
+        """
+
+        self._interactions = interactions
+        self._reward       = reward
+        self._constraint   = constraint #assumes the constraint is a function of key, context, action and reward in that order 
+
+    @property
+    def interactions(self) -> Sequence[Interaction]:
+        """The interactions in this simulation.
+
+        Remarks:
+            See the Simulation base class for more information.
+        """
+        self._adjusted_reward = self._constrant(self._interactions.key, self._interactions.context, self._interactions.actions, self._reward)
+        return self._interactions
+
+    @property
+    def reward(self) -> Reward:
+        """The reward object which can observe rewards for pairs of actions and interaction keys."""
+        return self._adjusted_reward
 
 class ClassificationSimulation(MemorySimulation):
     """A simulation created from classification dataset with features and labels.
