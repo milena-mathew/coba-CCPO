@@ -10,7 +10,6 @@ from coba.learners.core import Learner
 from coba.learners.bandit import RandomLearner, EpsilonBanditLearner, UcbBanditLearner
 from coba.learners.corral import CorralLearner
 from coba.learners.vowpal import VowpalLearner
-<<<<<<< HEAD
 from coba.learners.ChanceConstrainedPolicyOptimization import ChanceConstrainedOptimizer
 from coba.learners.linUCB import LinUCBLearner
 
