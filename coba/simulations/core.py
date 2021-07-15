@@ -146,6 +146,27 @@ class ClassificationReward(Reward):
             rewards.append(reward)
 
         return rewards
+    
+
+class ConstrainedReward(Reward):  
+    def __init__(self, rewards: Sequence[Tuple[Key,Action,float,float]] = []) -> None:
+        self._rewards: Dict[Tuple[Key,Action], float, float] = { (r[0],self._key(r[1])):(r[2],r[3]) for r in rewards }
+
+    def observe(self, choices: Sequence[Tuple[Key,Context,Action]] ) -> Sequence[float]:
+        return [ self._rewards[(key,self._key(action))] for key,_,action in choices ]
+
+    def _key(self, action):
+
+        if isinstance(action,str) or not isinstance(action,(collections.Sequence,dict)) :
+            return action
+
+        if len(action) == 2 and isinstance(action[0], tuple) and isinstance(action[1],tuple):
+            return tuple(zip(action[0], action[1]))
+
+        if isinstance(action,dict):
+            return tuple(action.items())
+
+        return action
 
 class MemorySimulation(Simulation):
     """A Simulation implementation created from in memory sequences of contexts, actions and rewards."""
@@ -178,18 +199,43 @@ class MemorySimulation(Simulation):
 class ConstrainedSimulation(Simulation):
     """A Simulation implementation akin to MemorySimulation with an added constraint."""
 
-    def __init__(self, constraint, interactions: Sequence[Interaction], reward: Reward) -> None:
-        """Instantiate a MemorySimulation.
+    def __init__(self,
+        n_interactions: int,
+        context       : Callable[[int               ],Context         ],
+        actions       : Callable[[int,Context       ],Sequence[Action]], 
+        reward        : Callable[[int,Context,Action],float           ],
+        observation    : Callable[[int,Context,Action],float           ]) -> None:
+        """Instantiate a LambdaSimulation.
 
         Args:
-            interactions: The sequence of interactions in this simulation.
-            reward: The reward object to observe in this simulation.
+            n_interactions: How many interactions the LambdaSimulation should have.
+            context: A function that should return a context given an index in `range(n_interactions)`.
+            actions: A function that should return all valid actions for a given index and context.
+            reward: A function that should return the reward for the index, context and action.
         """
 
-        self._interactions = interactions
-        self._reward       = reward
-        self._constraint   = constraint #assumes the constraint is a function of key, context, action and reward in that order 
+        interaction_tuples: List[Tuple[Key, Context, Sequence[Action]]] = []
+        reward_tuples     : List[Tuple[Key, Action , float , float]] = []
 
+        for i in range(n_interactions):
+            _context  = context(i)
+            _actions  = actions(i, _context)
+            _reward  = [ reward(i, _context, _action) for _action in _actions]
+            _observation = [ observation(i, _context, _action) for _action in _actions]
+
+            interaction_tuples.append( (i, _context, _actions) )
+            reward_tuples.extend(zip(repeat(i), _actions, _reward, _observation))
+
+        self._interactions = [ Interaction(key, context, actions) for key,context,actions in interaction_tuples ]
+        self._rewards       = ConstrainedReward(reward_tuples)
+        self._simulation   = MemorySimulation(self._interactions, self._rewards)
+
+    def read(self) -> Simulation:
+        return self._simulation
+
+    def __repr__(self) -> str:
+        return '"ConstrainedSimulation"'
+        
     @property
     def interactions(self) -> Sequence[Interaction]:
         """The interactions in this simulation.
@@ -197,13 +243,12 @@ class ConstrainedSimulation(Simulation):
         Remarks:
             See the Simulation base class for more information.
         """
-        self._adjusted_reward = self._constrant(self._interactions.key, self._interactions.context, self._interactions.actions, self._reward)
         return self._interactions
 
     @property
-    def reward(self) -> Reward:
+    def reward(self):
         """The reward object which can observe rewards for pairs of actions and interaction keys."""
-        return self._adjusted_reward
+        return ConstrainedReward(self._rewards)
 
 class ClassificationSimulation(MemorySimulation):
     """A simulation created from classification dataset with features and labels.

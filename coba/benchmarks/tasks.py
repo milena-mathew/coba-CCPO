@@ -39,6 +39,9 @@ class BenchmarkTask:
 
         def learn(self, key: Key, context: Context, action: Action, reward: float, probability: float) -> None:
             self._learner.learn(key, context, action, reward, probability) #type: ignore
+            
+        #def learn(self, key: Key, context: Context, action: Action, reward: float, observation: float, probability: float) -> None:
+         #   self._learner.learn(key, context, action, reward, observation, probability) #type: ignore
 
     class BenchmarkTaskSimulation(Source[Simulation]):
 
@@ -185,10 +188,18 @@ class Transactions(Filter[Iterable[Iterable[BenchmarkTask]], Iterable[Any]]):
                                         assert abs(sum(probs) - 1) < .0001, "The learner returned invalid proabilities for action choices."
                                         
                                         action = random.choice(interaction.actions, probs)
-                                        reward = simulation.reward.observe([(interaction.key, interaction.context, action)])[0]
                                         prob   = probs[interaction.actions.index(action)]
-                                        
-                                        learner.learn(interaction.key, interaction.context, action, reward, prob)
+                                        reward = simulation.reward.observe([(interaction.key, interaction.context, action)])[0]
+                                        if type(reward) is tuple:
+                                            print("I correctly guessed tuple")
+                                            observation = reward[1]
+                                            real_reward = reward[0]
+                                            print(learner)
+                                            learner.learn(interaction.key, interaction.context, action, real_reward, observation, prob)
+                                        else:
+                                            print("*sigh*")
+                                            learner.learn(interaction.key, interaction.context, action, reward, prob)
+                                            
                                         rewards.append(reward)
 
                                     yield Transaction.interactions(sim_id, lrn_id, _packed={"reward":rewards})

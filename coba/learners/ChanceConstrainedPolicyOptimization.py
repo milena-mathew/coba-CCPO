@@ -29,11 +29,9 @@ class ChanceConstrainedOptimizer(Learner):
 
     def __init__(self, constraint, learning_rate: float, vw_args=[], vw_kwargs={}) -> None:
         """An optional initialization method called once after pickling."""        
-        self.vwLearner = VowpalLearner(*vw_args, **vw_kwargs) # things saved here need to be able to be pickled
-        # self._t = 0
+        self.vwLearner = VowpalLearner(*vw_args, **vw_kwargs) 
         self._l = 0
         self._constraint = constraint # User defined constraint on reward (for now)
-        print(constraint)
         self._rho = learning_rate
 
     def predict(self, key: Key, context: Context, actions: Sequence[Action]) -> Sequence[float]:
@@ -61,7 +59,7 @@ class ChanceConstrainedOptimizer(Learner):
         """
         return self.vwLearner.predict(key, context, actions)
 
-    def learn(self, key: Key, context: Context, action: Action, reward: float, probability: float) -> None:
+    def learn(self, key: Key, context: Context, action: Action, reward: float, observation: float, probability: float) -> None:
         """Learn about the result of an action that was taken in a context.
 
         Args:
@@ -82,7 +80,10 @@ class ChanceConstrainedOptimizer(Learner):
             reward: The reward received for taking the given action in the given context.
             probability: The probability with wich the given action was selected.
         """
-        g = reward**2 - self._constraint
+        #reward = observations[0]
+        #observation = observations[1]
+        #print(reward)
+        g = observation**2 - self._constraint
         self._l = self._l - self._rho*g
         self._l = min(self._l, 0)
         adjusted_reward = reward + self._l*g
