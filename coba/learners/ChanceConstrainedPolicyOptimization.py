@@ -59,7 +59,7 @@ class ChanceConstrainedOptimizer(Learner):
         """
         return self.vwLearner.predict(key, context, actions)
 
-    def learn(self, key: Key, context: Context, action: Action, reward: float, observation: float, probability: float) -> None:
+    def learn(self, key: Key, context: Context, action: Action, observations: (float, float), probability: float) -> None:
         """Learn about the result of an action that was taken in a context.
 
         Args:
@@ -80,10 +80,10 @@ class ChanceConstrainedOptimizer(Learner):
             reward: The reward received for taking the given action in the given context.
             probability: The probability with wich the given action was selected.
         """
-        #reward = observations[0]
-        #observation = observations[1]
-        #print(reward)
-        g = observation**2 - self._constraint
+
+        reward = observations[0]
+        observation = observations[1]
+        g = observation**2 - self._constraint #swap out for something else
         self._l = self._l - self._rho*g
         self._l = min(self._l, 0)
         adjusted_reward = reward + self._l*g

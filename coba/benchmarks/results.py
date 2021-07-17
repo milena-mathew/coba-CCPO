@@ -335,6 +335,8 @@ class Result:
             if (simulation_id,learner_id) not in self._interactions: continue
 
             rewards = self._interactions[(simulation_id,learner_id)]["reward"]
+            if type(rewards[0]) is tuple:
+                rewards = [reward[0] for reward in rewards]
 
             if span is None or span >= len(rewards):
                 cumwindow  = list(accumulate(rewards))
