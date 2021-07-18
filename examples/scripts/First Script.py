@@ -3,7 +3,7 @@ This is an example script that creates a Benchmark.
 This script requires that the matplotlib and vowpalwabbit packages be installed.
 """
 
-from coba.learners import RandomLearner, EpsilonBanditLearner, VowpalLearner, ChanceConstrainedOptimizer
+from coba.learners import RandomLearner, EpsilonBanditLearner, VowpalLearner
 from coba.simulations import ValidationSimulation
 from coba.benchmarks import Benchmark
 
@@ -12,8 +12,9 @@ if __name__ == '__main__':
 
     #First, we define the learners that we want to test
     learners = [
-        VowpalLearner(bag=5, seed=10),      #This learner requires that VowpalWabbit be installed
-        ChanceConstrainedOptimizer(constraint=0.1, learning_rate=0.3, vw_kwargs={"bag":5, "seed":10})
+        RandomLearner(),
+        EpsilonBanditLearner(epsilon=0.025),
+        VowpalLearner(epsilon=.1), #This learner requires that VowpalWabbit be installed
     ]
 
     #Then we define the simulations that we want to test our learners on
