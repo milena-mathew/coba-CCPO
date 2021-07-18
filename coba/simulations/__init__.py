@@ -15,12 +15,13 @@ from coba.simulations.core import (
     CsvSimulation, ArffSimulation, LibsvmSimulation, ManikSimulation, ValidationSimulation, ConstrainedSimulation, ConstrainedReward
 )
 from coba.simulations.openml  import OpenmlSource, OpenmlSimulation
-from coba.simulations.filters import Shuffle, Take, PCA, Sort
+from coba.simulations.filters import SimulationFilter, Shuffle, Take, PCA, Sort
 
 __all__ = [
     'Context',
     'Action',
     'Key',
+    'Feedback',
     'Interaction',
     'Simulation',
     'OpenmlSource',
@@ -31,11 +32,9 @@ __all__ = [
     'ArffSimulation',
     'LibsvmSimulation',
     'ManikSimulation',
-    'Reward',
-    'MemoryReward',
-    'ClassificationReward',
     'OpenmlSimulation',
     'ValidationSimulation',
+    "SimulationFilter",
     'Shuffle',
     'Take',
     'PCA',

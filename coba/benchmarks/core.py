@@ -1,7 +1,7 @@
+from coba.simulations.core import Interaction
 from pathlib import Path
 from itertools import product
 from typing import Iterable, Sequence, cast, Optional, overload, List, Union
-
 
 from coba.learners import Learner
 from coba.simulations import Simulation, Take, Shuffle
@@ -41,7 +41,7 @@ class Benchmark:
         return CobaRegistry.construct(CobaConfig.Benchmark['file_fmt']).filter(JsonDecode().filter(content))
 
     def __init__(self, 
-        simulations: Sequence[Source[Simulation]],
+        simulations: Sequence[Simulation],
         shuffle    : Sequence[Optional[int]] = [None],
         take       : int = None) -> None:
         """Instantiate a Benchmark.
@@ -53,8 +53,8 @@ class Benchmark:
         """
         ...
 
-        sources = simulations
-        filters: List[Sequence[Filter[Simulation,Simulation]]] = []
+        sources: List[Simulation] = simulations
+        filters: List[Sequence[Filter[Iterable[Interaction],Iterable[Interaction]]]] = []
 
         if shuffle != [None]:
             filters.append([ Shuffle(seed) for seed in shuffle ])
@@ -63,11 +63,11 @@ class Benchmark:
             filters.append([ Take(take) ])
 
         if len(filters) > 0:
-            simulations = [cast(Source[Simulation],Pipe.join(s,f)) for s,f in product(sources, product(*filters))]
+            simulation_sources = [cast(Source[Simulation],Pipe.join(s,f)) for s,f in product(sources, product(*filters))]
         else:
-            simulations = list(sources)
+            simulation_sources = list(sources)
 
-        self._simulations         : Sequence[Source[Simulation]] = simulations
+        self._simulations         : Sequence[Source[Simulation]] = simulation_sources
         self._processes           : Optional[int]                = None
         self._maxtasksperchild    : Optional[int]                = None
         self._maxtasksperchild_set: bool                         = False

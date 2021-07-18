@@ -1,8 +1,8 @@
-from abc import ABC, abstractmethod
 import collections
 
-from itertools import accumulate, repeat, chain
-from typing import Optional, Sequence, List, Callable, Hashable, Tuple, Dict, Any, Union, Iterable
+from abc import abstractmethod
+from itertools import repeat, chain
+from typing import Optional, Sequence, List, Callable, Hashable, Any, Union, Iterable, cast
 
 from coba.random import CobaRandom
 
@@ -13,32 +13,30 @@ from coba.pipes import (
     ResponseToLines, Transpose, Flatten
 )
 
-Action      = Union[Tuple[Hashable,...], Hashable, dict]
+Action      = Union[Hashable, dict]
 Key         = int
-Context     = Optional[Union[Tuple[Hashable,...], Hashable, dict]]
+Context     = Optional[Union[Hashable, dict]]
+Feedback    = Any
 
 class Interaction:
     """A class to contain all data needed to represent an interaction in a bandit simulation."""
 
-    def __init__(self, key: Key, context: Context, actions: Sequence[Action]) -> None:
+    def __init__(self, context: Context, actions: Sequence[Action], feedbacks: Sequence[Feedback]) -> None:
         """Instantiate Interaction.
 
         Args
-            context: Features describing the interaction's context. Will be `None` for multi-armed bandit simulations.
-            actions: Features describing available actions in the interaction.
-            key    : A unique key assigned to this interaction.
+            context  : Features describing the interaction's context. Will be `None` for multi-armed bandit simulations.
+            actions  : Features describing available actions in the interaction.
+            feedbacks: Feedback that will be received based on the action that is taken in the interaction.
         """
 
-        assert actions, "At least one action must be provided to interact"
+        assert actions, "At least one action must be provided for each interaction."
 
-        self._key     = key
-        self._context = context
-        self._actions = actions
+        assert len(actions) == len(feedbacks), "The interaction should have a feedback for each action."
 
-    @property
-    def key(self) -> Key:
-        """A unique key identifying the interaction."""
-        return self._key
+        self._context   = context
+        self._actions   = actions
+        self._feedbacks = feedbacks
 
     @property
     def context(self) -> Optional[Context]:
@@ -49,7 +47,7 @@ class Interaction:
             return self._context
 
         #The context appears to be a sparse representation. Return it as a dictionary. This may be an incorrect assumption.
-        #In the future we should probably improve the back end so we can explicit indicate if our context is sparse rather
+        #In the future we should probably improve the back end so we can explicitly indicate if our context is sparse rather
         #than trying to infer it based on the structure of the context.
         if len(self._context) == 2 and isinstance(self._context[0],tuple) and isinstance(self._context[1],tuple):
             return dict(zip(self._context[0], self._context[1]))
@@ -64,13 +62,13 @@ class Interaction:
         actions = []
 
         for action in self._actions:
-            #context is non-existant or singular so return it as is
+            #action is non-existant or singular so return it as is
             if not isinstance(action, collections.Sequence):
                 actions.append(action)
 
-            #The context appears to be a sparse representation. Return it as a dictionary. This may be an incorrect assumption.
-            #In the future we should probably improve the back end so we can explicit indicate if our context is sparse rather
-            #than trying to infer it based on the structure of the context.
+            #The action appears to be a sparse representation. Return it as a dictionary. This may be an incorrect assumption.
+            #In the future we should probably improve the back end so we can explicitly indicate if our action is sparse rather
+            #than trying to infer it based on the structure of the action.
             elif len(action) == 2 and isinstance(action[0],tuple) and isinstance(action[1],tuple):
                 actions.append(dict(zip(action[0], action[1])))
 
@@ -82,25 +80,20 @@ class Interaction:
 
         return actions
 
-class Reward(ABC):
+    @property
+    def feedbacks(self) -> Sequence[Feedback]:
+        """The interaction's feedback associated with each action."""
+        return self._feedbacks
 
-    @abstractmethod
-    def observe(self, choices: Sequence[Tuple[Key,Context,Action]] ) -> Sequence[float]:
-        ...
-
-class Simulation(ABC):
+class Simulation(Source[Iterable[Interaction]]):
     """The simulation interface."""
 
-    @property
     @abstractmethod
-    def interactions(self) -> Sequence[Interaction]:
+    def read(self) -> Iterable[Interaction]:
         """The sequence of interactions in a simulation.
 
         Remarks:
-            Interactions should always be re-iterable. So long as interactions is a Sequence 
-            this will always be the case. If interactions is changed to Iterable in the future
-            then it will be possible for it to only allow enumeration one time and care will need
-            to be taken.
+            Interactions should always be re-iterable.
         """
         ...
 
@@ -171,26 +164,20 @@ class ConstrainedReward(Reward):
 class MemorySimulation(Simulation):
     """A Simulation implementation created from in memory sequences of contexts, actions and rewards."""
 
-    def __init__(self, interactions: Sequence[Interaction], reward: Reward) -> None:
+    def __init__(self, interactions: Sequence[Interaction]) -> None:
         """Instantiate a MemorySimulation.
 
         Args:
             interactions: The sequence of interactions in this simulation.
-            reward: The reward object to observe in this simulation.
         """
 
         self._interactions = interactions
-        self._reward       = reward
 
-    @property
-    def interactions(self) -> Sequence[Interaction]:
-        """The interactions in this simulation.
-
-        Remarks:
-            See the Simulation base class for more information.
-        """
+    def read(self) -> Iterable[Interaction]:
+        """Read the interactions in this simulation."""
+        
         return self._interactions
-
+    
     @property
     def reward(self) -> Reward:
         """The reward object which can observe rewards for pairs of actions and interaction keys."""
@@ -250,7 +237,7 @@ class ConstrainedSimulation(Simulation):
         """The reward object which can observe rewards for pairs of actions and interaction keys."""
         return ConstrainedReward(self._rewards)
 
-class ClassificationSimulation(MemorySimulation):
+class ClassificationSimulation(Simulation):
     """A simulation created from classification dataset with features and labels.
 
     ClassificationSimulation turns labeled observations from a classification data set
@@ -281,14 +268,23 @@ class ClassificationSimulation(MemorySimulation):
             labels_flat = list(chain.from_iterable(labels)) #type: ignore
         else:
             labels_flat = labels #type: ignore
-            
-        action_set   = list(sorted(set(labels_flat), key=lambda l: labels_flat.index(l) ))
-        interactions = [ Interaction(i, context, action_set) for i, context in enumerate(features) ] #type: ignore
-        reward       = ClassificationReward(list(enumerate(labels)))
 
-        super().__init__(interactions, reward) #type:ignore
+        feedback      = lambda action,label: int(is_label(action,label) or in_multilabel(action,label)) #type: ignore
+        is_label      = lambda action,label: action == label #type: ignore
+        in_multilabel = lambda action,label: isinstance(label,collections.Sequence) and action in label #type: ignore
 
-class LambdaSimulation(Source[Simulation]):
+        contexts  = features 
+        actions   = list(sorted(set(labels_flat), key=lambda l: labels_flat.index(l)))
+        feedbacks = [ [ feedback(action,label) for action in actions ] for label in labels ]
+
+        self._interactions = list(map(Interaction, contexts, repeat(actions), feedbacks))
+
+    def read(self) -> Iterable[Interaction]:
+        """Read the interactions in this simulation."""
+        
+        return self._interactions
+
+class LambdaSimulation(Simulation):
     """A Simulation created from lambda functions that generate contexts, actions and rewards.
 
     Remarks:
@@ -309,28 +305,24 @@ class LambdaSimulation(Source[Simulation]):
             reward: A function that should return the reward for the index, context and action.
         """
 
-        interaction_tuples: List[Tuple[Key, Context, Sequence[Action]]] = []
-        reward_tuples     : List[Tuple[Key, Action , float           ]] = []
+        self._interactions: List[Interaction] = []
 
         for i in range(n_interactions):
             _context  = context(i)
             _actions  = actions(i, _context)
             _rewards  = [ reward(i, _context, _action) for _action in _actions]
 
-            interaction_tuples.append( (i, _context, _actions) )
-            reward_tuples.extend(zip(repeat(i), _actions, _rewards))
+            self._interactions.append(Interaction(_context, _actions, _rewards))
 
-        self._interactions = [ Interaction(key, context, actions) for key,context,actions in interaction_tuples ]
-        self._reward       = MemoryReward(reward_tuples)
-        self._simulation   = MemorySimulation(self._interactions, self._reward)
-
-    def read(self) -> Simulation:
-        return self._simulation
+    def read(self) -> Iterable[Interaction]:
+        """Read the interactions in this simulation."""
+        
+        return self._interactions
 
     def __repr__(self) -> str:
         return '"LambdaSimulation"'
 
-class ReaderSimulation(Source[Simulation]):
+class ReaderSimulation(Simulation):
 
     def __init__(self, 
         reader      : Filter[Iterable[str], Any], 
@@ -349,8 +341,13 @@ class ReaderSimulation(Source[Simulation]):
         
         self._label_column = label_column
         self._with_header  = with_header
+        self._interactions = cast(Optional[Sequence[Interaction]], None)
 
-    def read(self) -> Simulation:
+    def read(self) -> Iterable[Interaction]:
+        """Read the interactions in this simulation."""
+        return self._load_interactions()
+
+    def _load_interactions(self) -> Sequence[Interaction]:
         parsed_rows_iter = iter(self._reader.filter(self._source.read()))
 
         if self._with_header:
@@ -379,50 +376,38 @@ class ReaderSimulation(Source[Simulation]):
         else:
             dense_labels = list(label_col)
 
-        return ClassificationSimulation(feature_rows, dense_labels)
+        return ClassificationSimulation(feature_rows, dense_labels).read()
 
     def __repr__(self) -> str:
         return str(self._source)
 
-class CsvSimulation(Source[Simulation]):
+class CsvSimulation(ReaderSimulation):
     def __init__(self, source:Union[str,Source[Iterable[str]]], label_column:Union[str,int], with_header:bool=True) -> None:
-        self._simulation_source = ReaderSimulation(CsvReader(), source, label_column, with_header)
-
-    def read(self) -> Simulation:
-        return self._simulation_source.read()
+        super().__init__(CsvReader(), source, label_column, with_header)
 
     def __repr__(self) -> str:
-        return f'{{"CsvSimulation":"{self._simulation_source}"}}'
+        return f'{{"CsvSimulation":"{super().__repr__()}"}}'
 
-class ArffSimulation(Source[Simulation]):
+class ArffSimulation(ReaderSimulation):
     def __init__(self, source:Union[str,Source[Iterable[str]]], label_column:Union[str,int]) -> None:
-        self._simulation_source = ReaderSimulation(ArffReader(skip_encoding=[label_column]), source, label_column)
-
-    def read(self) -> Simulation:
-        return self._simulation_source.read()
+        super().__init__(ArffReader(skip_encoding=[label_column]), source, label_column)
 
     def __repr__(self) -> str:
-        return f'{{"ArffSimulation":"{self._simulation_source}"}}'    
+        return f'{{"ArffSimulation":"{super().__repr__()}"}}'    
 
-class LibsvmSimulation(Source[Simulation]):
+class LibsvmSimulation(ReaderSimulation):
     def __init__(self, source:Union[str,Source[Iterable[str]]]) -> None:
-        self._simulation_source = ReaderSimulation(LibSvmReader(), source, 0, False)
-
-    def read(self) -> Simulation:
-        return self._simulation_source.read()
+        super().__init__(LibSvmReader(), source, 0, False)
 
     def __repr__(self) -> str:
-        return f'{{"LibsvmSimulation":"{self._simulation_source}"}}'
+        return f'{{"LibsvmSimulation":"{super().__repr__()}"}}'
 
-class ManikSimulation(Source[Simulation]):
+class ManikSimulation(ReaderSimulation):
     def __init__(self, source:Union[str,Source[Iterable[str]]]) -> None:
-        self._simulation_source = ReaderSimulation(ManikReader(), source, 0, False)
-
-    def read(self) -> Simulation:
-        return self._simulation_source.read()
+        super().__init__(ManikReader(), source, 0, False)
 
     def __repr__(self) -> str:
-        return f'{{"ManikSimulation":"{self._simulation_source}"}}'
+        return f'{{"ManikSimulation":"{super().__repr__()}"}}'
 
 class ValidationSimulation(LambdaSimulation):
     def __init__(self, n_interactions: int=500, n_actions: int=10, n_features: int=10, context_features:bool = True, action_features:bool = True, sparse: bool=False, seed:int=1) -> None:
@@ -485,9 +470,9 @@ class ValidationSimulation(LambdaSimulation):
 
             context = lambda i     :   sparsify(r.randoms(n_features))
             actions = lambda i,c   : [ sparsify(normalize(r.randoms(n_features))) for _ in range(r.randint(2,10)) ]
-            rewards = lambda i,c,a : sum([cc*t for cc,t in zip(unsparse(c),unsparse(a))])/sum(unsparse(a))
+            rewards = lambda i,c,a : sum([cc*t for cc,t in zip(unsparse(c),unsparse(a))])
 
         super().__init__(n_interactions, context, actions, rewards)
 
     def __repr__(self) -> str:
-        return f"ValidationSimulation(cf={self._context_features},af={self._action_features},seed={self._seed})"
+        return f"Validation"

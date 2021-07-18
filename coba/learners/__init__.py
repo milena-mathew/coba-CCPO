@@ -12,6 +12,7 @@ from coba.learners.corral import CorralLearner
 from coba.learners.vowpal import VowpalLearner
 from coba.learners.ChanceConstrainedPolicyOptimization import ChanceConstrainedOptimizer
 from coba.learners.linUCB import LinUCBLearner
+from coba.learners.regCB import RegCBLearner
 
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     'CorralLearner',
     'VowpalLearner',
     'ChanceConstrainedOptimizer',
-    'LinUCBLearner'
+    'LinUCBLearner',
+    'RegCBLearner'
 ]

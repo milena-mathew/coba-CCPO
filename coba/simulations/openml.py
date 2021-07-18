@@ -2,12 +2,12 @@ import json
 
 from itertools import compress
 from hashlib import md5
-from typing import Tuple, Sequence, Any, List, cast
+from typing import Optional, Tuple, Sequence, Any, List, Iterable
 
 from coba.pipes import Source, HttpSource
 from coba.config import CobaConfig, CobaException
 
-from coba.simulations.core import Context, Action, ClassificationSimulation, Simulation
+from coba.simulations.core import Context, Action, ClassificationSimulation, Interaction, Simulation
 
 class OpenmlSource(Source[Tuple[Sequence[Context], Sequence[Action]]]):
 
@@ -61,7 +61,7 @@ class OpenmlSource(Source[Tuple[Sequence[Context], Sequence[Action]]]):
                 else:
                     encoders.append(StringEncoder())
 
-            if isinstance(encoders[headers.index(target)], NumericEncoder):
+            if target=="" or isinstance(encoders[headers.index(target)], NumericEncoder):
                 target = self._get_classification_target(data_id)
 
             ignored[headers.index(target)] = False
@@ -170,7 +170,7 @@ class OpenmlSource(Source[Tuple[Sequence[Context], Sequence[Action]]]):
 
             if "Usually due to high server load" in response.text:
                 message = (
-                    "Openml reported an error that they believe is likely caused by high server loads ."
+                    "Openml has experienced an error that they believe is the result of high server loads ."
                     "Openml recommends that you try again in a few seconds. Additionally, if not already "
                     "done, consider setting up a DiskCache in coba config to reduce the number of openml "
                     "calls in the future.")
@@ -199,7 +199,7 @@ class OpenmlSource(Source[Tuple[Sequence[Context], Sequence[Action]]]):
         t_key = f'https://www.openml.org/api/v1/json/task/list/data_id/{data_id}'
         t_bites = self._query(t_key, "tasks")
 
-        tasks = json.loads(t_bites.decode('utf-8'))["tasks"]["task"]
+        tasks = json.loads(t_bites.decode('utf-8')).get("tasks",{}).get("task",[])
         
         if t_key not in CobaConfig.Cacher:
             CobaConfig.Cacher.put(t_key,t_bites)
@@ -212,7 +212,7 @@ class OpenmlSource(Source[Tuple[Sequence[Context], Sequence[Action]]]):
 
         raise CobaException(f"Openml {data_id} does not appear to be a classification dataset")
 
-class OpenmlSimulation(Source[Simulation]):
+class OpenmlSimulation(Simulation):
     """A simulation created from openml data with features and labels.
 
     OpenmlSimulation turns labeled observations from a classification data set,
@@ -225,11 +225,11 @@ class OpenmlSimulation(Source[Simulation]):
 
     def __init__(self, id: int, md5_checksum: str = None) -> None:
         self._source = OpenmlSource(id, md5_checksum)
+        self._interactions: Optional[Sequence[Interaction]] = None
 
-    def read(self) -> Simulation:        
-        feature_rows, label_col = self._source.read()
-
-        return ClassificationSimulation(feature_rows, label_col)
+    def read(self) -> Iterable[Interaction]:
+        """Read the interactions in this simulation."""
+        return ClassificationSimulation(*self._source.read()).read()
 
     def __repr__(self) -> str:
         return f'{{"OpenmlSimulation":{self._source._data_id}}}'
