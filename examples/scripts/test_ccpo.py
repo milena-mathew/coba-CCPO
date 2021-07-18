@@ -18,10 +18,10 @@ def actions(index: int, context: Context) -> Sequence[Action]:
 def rewards(index: int, context: Context, action: Action) -> float:
     return sum(c*a for c,a in zip(context,action))
 
-def observations(index: int, context: Context, action: Action) -> float:
-    return sum(c-a for c,a in zip(context,action))
+def feedback(index: int, context: Context, action: Action) -> float:
+    return tuple((sum(c*a for c,a in zip(context,action)), sum(c-a for c,a in zip(context,action))))
 
-sim = [ConstrainedSimulation(n_interactions, context, actions, rewards, observations)]
+sim = [ConstrainedSimulation(n_interactions, context, actions, feedback)]
 
 Benchmark(sim).evaluate([ChanceConstrainedOptimizer(constraint=0.1, learning_rate=0.3, vw_kwargs={"bag":5, "seed":10})]).plot_learners()
 
