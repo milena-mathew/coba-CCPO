@@ -10,17 +10,18 @@ TODO Add RegressionSimulation
 """
 
 from coba.simulations.core import (
-    Context, Action, Key, Interaction, Simulation, Reward, MemorySimulation, 
-    LambdaSimulation, ClassificationSimulation, MemoryReward, ClassificationReward, 
-    CsvSimulation, ArffSimulation, LibsvmSimulation, ManikSimulation, ValidationSimulation, ConstrainedSimulation, ConstrainedReward
+    Context, Action, Key, Interaction, Simulation, MemorySimulation, 
+    LambdaSimulation, ClassificationSimulation, CsvSimulation, ArffSimulation, 
+    LibsvmSimulation, ManikSimulation, ValidationSimulation, ConstrainedSimulation
 )
 from coba.simulations.openml  import OpenmlSource, OpenmlSimulation
-from coba.simulations.filters import Shuffle, Take, PCA, Sort
+from coba.simulations.filters import SimulationFilter, Shuffle, Take, PCA, Sort
 
 __all__ = [
     'Context',
     'Action',
     'Key',
+    'Feedback',
     'Interaction',
     'Simulation',
     'OpenmlSource',
@@ -31,15 +32,12 @@ __all__ = [
     'ArffSimulation',
     'LibsvmSimulation',
     'ManikSimulation',
-    'Reward',
-    'MemoryReward',
-    'ClassificationReward',
     'OpenmlSimulation',
     'ValidationSimulation',
+    "SimulationFilter",
     'Shuffle',
     'Take',
     'PCA',
     'Sort',
-    'ConstrainedSimulation',
-    'ConstrainedReward'
+    'ConstrainedSimulation'
 ]
