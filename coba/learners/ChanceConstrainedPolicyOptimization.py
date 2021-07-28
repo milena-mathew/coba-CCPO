@@ -17,7 +17,7 @@ class ChanceConstrainedOptimizer(Learner):
 
         This value is used for descriptive purposes only when creating benchmark results.
         """
-        return self.vwLearner.family + "-chanceconstrained"
+        return self._learner.family + "-chanceconstrained"
 
     @property
     def params(self) -> Dict[str,Any]:
@@ -25,11 +25,11 @@ class ChanceConstrainedOptimizer(Learner):
 
         This value is used for descriptive purposes only when creating benchmark results.
         """
-        return {"vw_params":self.vwLearner.params, "constraint": self._constraint, "learning_rate_rho": self._rho}
+        return {"vw_params":self._learner.params, "constraint": self._constraint, "learning_rate_rho": self._rho}
 
-    def __init__(self, constraint, learning_rate: float, vw_args=[], vw_kwargs={}) -> None:
+    def __init__(self, constraint, learning_rate: float, learner, vw_args=[], vw_kwargs={}) -> None:
         """An optional initialization method called once after pickling."""        
-        self.vwLearner = VowpalLearner(*vw_args, **vw_kwargs) 
+        self._learner = learner(*vw_args, **vw_kwargs) 
         self._l = 0
         self._constraint = constraint # User defined constraint on reward (for now)
         self._rho = learning_rate
@@ -57,7 +57,7 @@ class ChanceConstrainedOptimizer(Learner):
         Returns:
             A sequence of probabilities indicating the probability for each action.
         """
-        return self.vwLearner.predict(key, context, actions)
+        return self._learner.predict(key, context, actions)
 
     def learn(self, key: Key, context: Context, action: Action, feedback: Any, probability: float) -> None:
         """Learn about the result of an action that was taken in a context.
@@ -82,11 +82,12 @@ class ChanceConstrainedOptimizer(Learner):
         """
         reward = feedback[0]
         observation = feedback[1]
-        g = observation**2 - self._constraint #swap out for something else
+        observation2 = feedback[2]
+        g = observation**2 - self._constraint
         self._l = self._l - self._rho*g
         self._l = min(self._l, 0)
         adjusted_reward = reward + self._l*g
-        return self.vwLearner.learn(key, context, action, adjusted_reward, probability)
+        return self._learner.learn(key, context, action, adjusted_reward, probability)
 
         
         

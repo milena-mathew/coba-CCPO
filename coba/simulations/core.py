@@ -200,20 +200,20 @@ class LambdaSimulation(Simulation):
         return '"LambdaSimulation"'
     
 class ConstrainedSimulation(Simulation):
-    """A Simulation implementation akin to MemorySimulation with an added constraint."""
 
     def __init__(self,
         n_interactions: int,
         context       : Callable[[int               ],Context         ],
         actions       : Callable[[int,Context       ],Sequence[Action]], 
-        feedback    : Callable[[int,Context,Action],Any           ]) -> None:
-        """Instantiate a LambdaSimulation.
-
+        feedback    : Callable[[int,Context,Action],Sequence[float]]) -> None:
+        
+        """A Simulation implementation akin to LambdaSimulation with an added constraint. 
+    
         Args:
-            n_interactions: How many interactions the LambdaSimulation should have.
-            context: A function that should return a context given an index in `range(n_interactions)`.
-            actions: A function that should return all valid actions for a given index and context.
-            reward: A function that should return the reward for the index, context and action.
+                n_interactions: How many interactions the ConstrainedSimulation should have.
+                context: A function that should return a context given an index in `range(n_interactions)`.
+                actions: A function that should return all valid actions for a given index and context.
+                feedback: A function that should return the reward (element 0) and other feedback with negative expected value (remaining elements) for the index, context and action.
         """
 
         self._interactions: List[Interaction] = []
