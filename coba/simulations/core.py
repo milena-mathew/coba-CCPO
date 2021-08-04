@@ -213,7 +213,7 @@ class ConstrainedSimulation(Simulation):
                 n_interactions: How many interactions the ConstrainedSimulation should have.
                 context: A function that should return a context given an index in `range(n_interactions)`.
                 actions: A function that should return all valid actions for a given index and context.
-                feedback: A function that should return the reward (element 0) and other feedback with negative expected value (remaining elements) for the index, context and action.
+                feedback: A function that should return the reward (element 0) and other feedback with negative expected value (remaining elements, result of g function) for the index, context and action.
         """
 
         self._interactions: List[Interaction] = []
