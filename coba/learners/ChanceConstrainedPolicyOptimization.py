@@ -83,7 +83,7 @@ class ChanceConstrainedOptimizer(Learner):
         
         def grad(*args):
             return [f for f in feedback[1:]]
-        
+
         duals = self._freegrad.update(gradientfn=grad)
         duals = [min(v, 0) for v in duals]
         adjusted_reward = feedback[0] + sum(a * b for (a, b) in zip(duals, feedback[1:])) 
