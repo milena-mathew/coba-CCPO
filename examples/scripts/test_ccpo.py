@@ -12,10 +12,7 @@ def context(index: int) -> Context:
     return tuple(r.randoms(5))
 
 def actions(index: int, context: Context) -> Sequence[Action]:
-    if r.randoms()[0] < 0.5:
-        return [2]
-    else:
-        return [1]
+    return [1, 2]
     #actions = [ r.randoms(5) for _ in range(3) ]
     #return [ tuple(a/sum(action) for a in action) for action in actions ]
 
