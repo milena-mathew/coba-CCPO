@@ -5,8 +5,9 @@ from typing import Any, Sequence, Dict
 
 from coba.simulations import Context, Action, Key
 from coba.random import CobaRandom
+from coba.utilities import DiagonalFreeGrad
 from coba.learners.core import Learner
-from coba.learners.vowpal import VowpalLearner
+
 
 class ChanceConstrainedOptimizer(Learner):
     """The interface for Learner implementations."""
@@ -25,14 +26,13 @@ class ChanceConstrainedOptimizer(Learner):
 
         This value is used for descriptive purposes only when creating benchmark results.
         """
-        return {"vw_params":self._learner.params, "constraint": self._constraint, "learning_rate_rho": self._rho}
+        return {"vw_params":self._learner.params, "learning_rate_rho": self._rho}
 
-    def __init__(self, constraint, learning_rate: float, learner, vw_args=[], vw_kwargs={}) -> None:
+    def __init__(self, constraint, len_feedback, learning_rate: float, learner, vw_args=[], vw_kwargs={}) -> None:
         """An optional initialization method called once after pickling."""        
         self._learner = learner(*vw_args, **vw_kwargs) 
-        self._l = 0
-        self._constraint = constraint # User defined constraint on reward (for now)
         self._rho = learning_rate
+        self._freegrad = DiagonalFreeGrad(d=len_feedback)
 
     def predict(self, key: Key, context: Context, actions: Sequence[Action]) -> Sequence[float]:
         """Determine a PMF with which to select the given actions.
@@ -80,14 +80,12 @@ class ChanceConstrainedOptimizer(Learner):
             feedback: The feedback received for taking the given action in the given context.
             probability: The probability with wich the given action was selected.
         """
-        reward = feedback[0]
-        observation = feedback[1]
-        observation2 = feedback[2]
-        g = observation**2 - self._constraint
-        self._l = self._l - self._rho*g
-        self._l = min(self._l, 0)
-        adjusted_reward = reward + self._l*g
-        return self._learner.learn(key, context, action, adjusted_reward, probability)
+        
+        def grad(*args):
+            return [f for f in feedback[1:]]
 
-        
-        
+        duals = self._freegrad.update(gradientfn=grad)
+        duals = [min(v, 0) for v in duals]
+        adjusted_reward = feedback[0] + sum(a * b for (a, b) in zip(duals, feedback[1:])) 
+        return self._learner.learn(key, context, action, adjusted_reward, probability)
+    

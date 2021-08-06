@@ -7,6 +7,9 @@ from io import UnsupportedOperation
 from contextlib import contextmanager
 from typing import IO
 
+import numpy as np
+from numpy.core.records import array
+
 @contextmanager
 def redirect_stderr(to: IO[str]):
     """Redirect stdout for both C and Python.
@@ -162,3 +165,113 @@ class PackageChecker:
                 caller_name + " requires sklearn. You can "
                 "install sklearn with `pip install sklearn`."
             ) from e
+
+class DiagonalFreeGrad: 
+    """
+    Created on Thu Jun 17 16:40:05 2021
+    @author: Zakaria Mhammedi
+    """
+    def __init__(self, d, restart=False, project=False, autoradius=True, radius=1, epsilon=1):
+        # Initialize the "sufficient statistics"
+        self.d = d
+        self.w = np.zeros(d)     # Prediction vector
+        self.G = np.zeros(d)     # Sum of gradients 
+        self.V = np.zeros(d)     # Sum of squared coordinate-wise gradients
+        self.S = np.zeros(d)     # Sum of normalized coordinate-wise gradients (used for restarts)
+        self.h1 = np.zeros(d)    # Absolute values of initial non-zero coordinate-wise gradients
+        self.ht = np.zeros(d)    # Maximum absolute values of coordinate-wise gradients up to t
+        self.Ht = 0
+        self.sum_normalized_grad_norm = 1 # Sum of normalized gradients (used for projections)
+        
+        # Initializing the loss
+        self.L = 0
+
+        self.restart = restart
+        self.project = project
+        self.autoradius = autoradius
+        self.radius = radius
+        self.epsilon = epsilon
+
+    def update(self, gradientfn):
+        # do what was inside the loop, accumulate into state variables
+        # Get the feature vector and the label
+        
+        def norm(x):
+            return np.sqrt(np.dot(x,x))
+            
+        # Norm of prediction 
+        w_norm = norm(self.w)
+
+        if self.autoradius:
+            project_radius = self.epsilon * np.sqrt(self.sum_normalized_grad_norm)
+        else:
+            project_radius = self.radius
+          
+        
+        w_project = self.w
+        if self.project:
+            if w_norm > project_radius:
+                print('Projected')
+                w_project = self.w * project_radius/w_norm
+        
+        # Compute gradient information
+        g = gradientfn(w_project)
+        
+        # Cutkosky's varying constrains' reduction:
+        # Alg. 1 in http://proceedings.mlr.press/v119/cutkosky20a/cutkosky20a.pdf with sphere sets
+        if self.project and w_norm > project_radius and np.dot(g,self.w) < 0:
+            tilde_g = g - np.dot(g,self.w/w_norm) * self.w/w_norm 
+        else:
+            tilde_g = g
+
+        if isinstance(tilde_g, float):
+            tilde_g = np.array([tilde_g])
+            
+        clipped_g = tilde_g
+        
+        # Update stuff
+        for i in range(self.d):
+            # Clip the gradient
+            abs_tilde_g  = abs(tilde_g[i])
+            
+            # Only do something if non-zero grad observed
+            if abs_tilde_g == 0:
+                continue
+            
+            # Update the hints
+            tmp_ht = self.ht[i]
+            if self.h1[i]==0:
+                self.h1[i]=abs_tilde_g
+                self.ht[i]=abs_tilde_g
+                self.V[i]+=tilde_g[i]**2
+            elif abs_tilde_g > tmp_ht:
+                clipped_g[i] *= tmp_ht/abs_tilde_g  
+                self.ht[i] = abs_tilde_g
+                
+            # Check for restarts
+            if self.restart and self.ht[i]/self.h1[i] > self.S[i]+2:
+                print('Restarted')
+                self.h1[i]=self.ht[i]
+                self.G[i] = clipped_g[i]
+                self.V[i] = clipped_g[i]**2
+            else:
+                self.G[i] += clipped_g[i]
+                self.V[i] += clipped_g[i]**2
+                
+            # Check this is the same as the implementation (the tmp_ht part)
+            if tmp_ht>0:
+                self.S[i] += abs(clipped_g[i])/tmp_ht
+                
+        # Compute prediction
+        absG = abs(self.G)
+        self.w = - self.G * self.epsilon * self.h1**2 *(2*self.V+self.ht*absG)/(2*(self.V+self.ht*absG)**2 * np.sqrt(self.V))\
+            * np.exp(absG**2/(2 * self.V + 2 * self.ht * absG))
+       
+        # Update statistics for projections
+        norm_clipped_g = norm(clipped_g)
+        if norm_clipped_g > self.Ht:
+            self.Ht = norm_clipped_g
+        if self.Ht > 0:
+            self.sum_normalized_grad_norm +=  norm_clipped_g/self.Ht 
+            
+        return self.w
